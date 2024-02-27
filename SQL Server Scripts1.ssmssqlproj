@@ -1,0 +1,1161 @@
+<?xml version="1.0"?>
+<SqlWorkbenchSqlProject xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" Name="SQL Server Scripts1">
+  <Items>
+    <LogicalFolder Name="Connections" Type="2" Sorted="true">
+      <Items />
+    </LogicalFolder>
+    <LogicalFolder Name="Queries" Type="0" Sorted="true">
+      <Items>
+        <FileNode Name="adhoc_backup_job.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>adhoc_backup_job.sql</FullPath>
+        </FileNode>
+        <FileNode Name="agent_job_history_7days.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>agent_job_history_7days.sql</FullPath>
+        </FileNode>
+        <FileNode Name="All Databases Index fragmentation.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>All Databases Index fragmentation.sql</FullPath>
+        </FileNode>
+        <FileNode Name="ALL_IN_1_BACKUP.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>ALL_IN_1_BACKUP.sql</FullPath>
+        </FileNode>
+        <FileNode Name="All_Table_Sizes.SQL">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>All_Table_Sizes.SQL</FullPath>
+        </FileNode>
+        <FileNode Name="All_tables_export.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>All_tables_export.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Audit_LOGIN_SETUP.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Audit_LOGIN_SETUP.sql</FullPath>
+        </FileNode>
+        <FileNode Name="availability_first_step.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>availability_first_step.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Backup_location.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Backup_location.sql</FullPath>
+        </FileNode>
+        <FileNode Name="backup-estimate.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>backup-estimate.sql</FullPath>
+        </FileNode>
+        <FileNode Name="bad_passwords.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>bad_passwords.sql</FullPath>
+        </FileNode>
+        <FileNode Name="big_hitters_cms.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>big_hitters_cms.sql</FullPath>
+        </FileNode>
+        <FileNode Name="BLOB_DATA_LOAD_SCENARIO.SQL">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>BLOB_DATA_LOAD_SCENARIO.SQL</FullPath>
+        </FileNode>
+        <FileNode Name="blocking-tree.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>blocking-tree.sql</FullPath>
+        </FileNode>
+        <FileNode Name="bulk_insert.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>bulk_insert.sql</FullPath>
+        </FileNode>
+        <FileNode Name="busiest_databases.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>busiest_databases.sql</FullPath>
+        </FileNode>
+        <FileNode Name="C2_audit_trace.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>C2_audit_trace.sql</FullPath>
+        </FileNode>
+        <FileNode Name="capacity_planning.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>capacity_planning.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Central_management_estate_info.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Central_management_estate_info.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Change_all_autogrowth_settings.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Change_all_autogrowth_settings.sql</FullPath>
+        </FileNode>
+        <FileNode Name="change-db-owner-create.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>change-db-owner-create.sql</FullPath>
+        </FileNode>
+        <FileNode Name="change-sql-jobs-if-availability-group.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>change-sql-jobs-if-availability-group.sql</FullPath>
+        </FileNode>
+        <FileNode Name="check all table fillfactor.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>check all table fillfactor.sql</FullPath>
+        </FileNode>
+        <FileNode Name="check_availability_pair_job.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>check_availability_pair_job.sql</FullPath>
+        </FileNode>
+        <FileNode Name="check_fragmentation.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>check_fragmentation.sql</FullPath>
+        </FileNode>
+        <FileNode Name="check_meltdown.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>check_meltdown.sql</FullPath>
+        </FileNode>
+        <FileNode Name="check_tempdb_speed.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>check_tempdb_speed.sql</FullPath>
+        </FileNode>
+        <FileNode Name="CLR_find_objects.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>CLR_find_objects.sql</FullPath>
+        </FileNode>
+        <FileNode Name="cluster_info.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>cluster_info.sql</FullPath>
+        </FileNode>
+        <FileNode Name="CMS-instance-info.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>CMS-instance-info.sql</FullPath>
+        </FileNode>
+        <FileNode Name="connect_without_linked_server.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>connect_without_linked_server.sql</FullPath>
+        </FileNode>
+        <FileNode Name="connection_monitor.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>connection_monitor.sql</FullPath>
+        </FileNode>
+        <FileNode Name="connection_monitor_table.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>connection_monitor_table.sql</FullPath>
+        </FileNode>
+        <FileNode Name="cost_executed_parallel.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>cost_executed_parallel.sql</FullPath>
+        </FileNode>
+        <FileNode Name="cost_threshold_for_parallelism.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>cost_threshold_for_parallelism.sql</FullPath>
+        </FileNode>
+        <FileNode Name="CPU monitoring.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>CPU monitoring.sql</FullPath>
+        </FileNode>
+        <FileNode Name="create_all_index_script.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>create_all_index_script.sql</FullPath>
+        </FileNode>
+        <FileNode Name="create_logon_trigger.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>create_logon_trigger.sql</FullPath>
+        </FileNode>
+        <FileNode Name="cursor_all_databases.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>cursor_all_databases.sql</FullPath>
+        </FileNode>
+        <FileNode Name="cursor_who3.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>cursor_who3.sql</FullPath>
+        </FileNode>
+        <FileNode Name="DAC_port.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>DAC_port.sql</FullPath>
+        </FileNode>
+        <FileNode Name="database_file_sizes.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>database_file_sizes.sql</FullPath>
+        </FileNode>
+        <FileNode Name="database_file_with _freespace_included.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>database_file_with _freespace_included.sql</FullPath>
+        </FileNode>
+        <FileNode Name="dbcc_checkdb_ALL.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>dbcc_checkdb_ALL.sql</FullPath>
+        </FileNode>
+        <FileNode Name="dbMonitor.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>dbMonitor.sql</FullPath>
+        </FileNode>
+        <FileNode Name="dbMonitor_job.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>dbMonitor_job.sql</FullPath>
+        </FileNode>
+        <FileNode Name="ddc_fragmentation_catch.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>ddc_fragmentation_catch.sql</FullPath>
+        </FileNode>
+        <FileNode Name="default_trace_queries.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>default_trace_queries.sql</FullPath>
+        </FileNode>
+        <FileNode Name="deploy_PLE_CPU_GATHER.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>deploy_PLE_CPU_GATHER.sql</FullPath>
+        </FileNode>
+        <FileNode Name="dfind_listening_port.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>dfind_listening_port.sql</FullPath>
+        </FileNode>
+        <FileNode Name="disable_foreign keys.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>disable_foreign keys.sql</FullPath>
+        </FileNode>
+        <FileNode Name="disabled_logins.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>disabled_logins.sql</FullPath>
+        </FileNode>
+        <FileNode Name="drive_size_percent.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>drive_size_percent.sql</FullPath>
+        </FileNode>
+        <FileNode Name="drop_in_memory.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>drop_in_memory.sql</FullPath>
+        </FileNode>
+        <FileNode Name="elevate_permissions_job.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>elevate_permissions_job.sql</FullPath>
+        </FileNode>
+        <FileNode Name="EPO_Clear_DOWN.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>EPO_Clear_DOWN.sql</FullPath>
+        </FileNode>
+        <FileNode Name="example _network share_backup.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>example _network share_backup.sql</FullPath>
+        </FileNode>
+        <FileNode Name="failed_agent_jobs.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>failed_agent_jobs.sql</FullPath>
+        </FileNode>
+        <FileNode Name="fill_factor_all_tables.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>fill_factor_all_tables.sql</FullPath>
+        </FileNode>
+        <FileNode Name="fill-factor.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>fill-factor.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find column in all tables.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find column in all tables.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_a_column_in_database.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_a_column_in_database.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Find_all_DBOwners.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Find_all_DBOwners.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_database_CMS.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_database_CMS.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_detached_db.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_detached_db.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_disabled_logins.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_disabled_logins.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_encrypted_objects.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_encrypted_objects.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_failed_job_tlogs.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_failed_job_tlogs.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_foreign key.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_foreign key.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_heaps.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_heaps.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_instance_CMS.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_instance_CMS.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_instances_on_server.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_instances_on_server.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_job_schedule_named_job.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_job_schedule_named_job.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_jobs_between_times.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_jobs_between_times.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_non_conforming_DBOwners.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_non_conforming_DBOwners.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Find_non_non_system_tables_in_master.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Find_non_non_system_tables_in_master.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_PBM_fails.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_PBM_fails.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_SA_permissions.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_SA_permissions.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_table.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_table.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_those_long_queries.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_those_long_queries.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find_unused_accounts.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find_unused_accounts.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find-most-commonly-used-indexes.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find-most-commonly-used-indexes.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find-non-valid-accounts.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find-non-valid-accounts.sql</FullPath>
+        </FileNode>
+        <FileNode Name="find-value-all-tables.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>find-value-all-tables.sql</FullPath>
+        </FileNode>
+        <FileNode Name="fix_repldone.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>fix_repldone.sql</FullPath>
+        </FileNode>
+        <FileNode Name="foreachdb_examples.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>foreachdb_examples.sql</FullPath>
+        </FileNode>
+        <FileNode Name="fragmentation_all_tables.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>fragmentation_all_tables.sql</FullPath>
+        </FileNode>
+        <FileNode Name="gather_blocking1.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>gather_blocking1.sql</FullPath>
+        </FileNode>
+        <FileNode Name="generate_disable_allow_page_locks.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>generate_disable_allow_page_locks.sql</FullPath>
+        </FileNode>
+        <FileNode Name="generate_worst_DBCC_showContig.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>generate_worst_DBCC_showContig.sql</FullPath>
+        </FileNode>
+        <FileNode Name="get_all_permissions.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>get_all_permissions.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Get_all_tables_count.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Get_all_tables_count.sql</FullPath>
+        </FileNode>
+        <FileNode Name="get_database_growth_all.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>get_database_growth_all.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Get_drive_free_disk_space.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Get_drive_free_disk_space.sql</FullPath>
+        </FileNode>
+        <FileNode Name="get_instance_info.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>get_instance_info.sql</FullPath>
+        </FileNode>
+        <FileNode Name="get_linked_server_info.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>get_linked_server_info.sql</FullPath>
+        </FileNode>
+        <FileNode Name="get_PBM_alerts.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>get_PBM_alerts.sql</FullPath>
+        </FileNode>
+        <FileNode Name="helpdb_with_version2.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>helpdb_with_version2.sql</FullPath>
+        </FileNode>
+        <FileNode Name="in_recovery.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>in_recovery.sql</FullPath>
+        </FileNode>
+        <FileNode Name="index_frag_and_statistics_DB.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>index_frag_and_statistics_DB.sql</FullPath>
+        </FileNode>
+        <FileNode Name="index_usage_stats.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>index_usage_stats.sql</FullPath>
+        </FileNode>
+        <FileNode Name="IndexOptimize.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>IndexOptimize.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Instance_Report.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Instance_Report.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Instance_Report_NEW.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Instance_Report_NEW.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Instance_Report_NEWEST.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Instance_Report_NEWEST.sql</FullPath>
+        </FileNode>
+        <FileNode Name="instead_forEachDb.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>instead_forEachDb.sql</FullPath>
+        </FileNode>
+        <FileNode Name="job_history.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>job_history.sql</FullPath>
+        </FileNode>
+        <FileNode Name="jobs-only.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>jobs-only.sql</FullPath>
+        </FileNode>
+        <FileNode Name="kill_all_db_connections.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>kill_all_db_connections.sql</FullPath>
+        </FileNode>
+        <FileNode Name="last_used_database.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>last_used_database.sql</FullPath>
+        </FileNode>
+        <FileNode Name="last_used_database_inc_objects.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>last_used_database_inc_objects.sql</FullPath>
+        </FileNode>
+        <FileNode Name="last-backups.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>last-backups.sql</FullPath>
+        </FileNode>
+        <FileNode Name="list_all_cached_plans.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>list_all_cached_plans.sql</FullPath>
+        </FileNode>
+        <FileNode Name="List_SSIS_PAckages.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>List_SSIS_PAckages.sql</FullPath>
+        </FileNode>
+        <FileNode Name="log_shipping_remove.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>log_shipping_remove.sql</FullPath>
+        </FileNode>
+        <FileNode Name="LOGON_Audit_Extended_events_Setup.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>LOGON_Audit_Extended_events_Setup.sql</FullPath>
+        </FileNode>
+        <FileNode Name="logshipp.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>logshipp.sql</FullPath>
+        </FileNode>
+        <FileNode Name="LSN_check.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>LSN_check.sql</FullPath>
+        </FileNode>
+        <FileNode Name="mail_it.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>mail_it.sql</FullPath>
+        </FileNode>
+        <FileNode Name="maxdop_optimal_settings.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>maxdop_optimal_settings.sql</FullPath>
+        </FileNode>
+        <FileNode Name="meltdown.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>meltdown.sql</FullPath>
+        </FileNode>
+        <FileNode Name="memory_allocation.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>memory_allocation.sql</FullPath>
+        </FileNode>
+        <FileNode Name="memory_buffer_pool_view.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>memory_buffer_pool_view.sql</FullPath>
+        </FileNode>
+        <FileNode Name="mem-pool-details-objects.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>mem-pool-details-objects.sql</FullPath>
+        </FileNode>
+        <FileNode Name="mirror.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>mirror.sql</FullPath>
+        </FileNode>
+        <FileNode Name="mirror_failover.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>mirror_failover.sql</FullPath>
+        </FileNode>
+        <FileNode Name="missing_index.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>missing_index.sql</FullPath>
+        </FileNode>
+        <FileNode Name="monitoring_old_SQL.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>monitoring_old_SQL.sql</FullPath>
+        </FileNode>
+        <FileNode Name="monitoring_PLE_CPU_setup.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>monitoring_PLE_CPU_setup.sql</FullPath>
+        </FileNode>
+        <FileNode Name="no_join_predicate.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>no_join_predicate.sql</FullPath>
+        </FileNode>
+        <FileNode Name="open_transactions.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>open_transactions.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Orphan_Fix_all.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Orphan_Fix_all.sql</FullPath>
+        </FileNode>
+        <FileNode Name="OSP_counters.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>OSP_counters.sql</FullPath>
+        </FileNode>
+        <FileNode Name="page_life_expectancy.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>page_life_expectancy.sql</FullPath>
+        </FileNode>
+        <FileNode Name="PBM_History.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>PBM_History.sql</FullPath>
+        </FileNode>
+        <FileNode Name="PBM_monitor.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>PBM_monitor.sql</FullPath>
+        </FileNode>
+        <FileNode Name="plan_cache_SQL.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>plan_cache_SQL.sql</FullPath>
+        </FileNode>
+        <FileNode Name="plan_guide_info.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>plan_guide_info.sql</FullPath>
+        </FileNode>
+        <FileNode Name="PLE_table.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>PLE_table.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Post_install_script.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Post_install_script.sql</FullPath>
+        </FileNode>
+        <FileNode Name="pre-decomm.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>pre-decomm.sql</FullPath>
+        </FileNode>
+        <FileNode Name="query_plan_estimator.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>query_plan_estimator.sql</FullPath>
+        </FileNode>
+        <FileNode Name="query-baseline-table.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>query-baseline-table.sql</FullPath>
+        </FileNode>
+        <FileNode Name="randall_wait_stats.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>randall_wait_stats.sql</FullPath>
+        </FileNode>
+        <FileNode Name="random_table_data.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>random_table_data.sql</FullPath>
+        </FileNode>
+        <FileNode Name="RE-ENABLE-FULL-BACKUP-JOBS.SQL">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>RE-ENABLE-FULL-BACKUP-JOBS.SQL</FullPath>
+        </FileNode>
+        <FileNode Name="Remove_Maintenance.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Remove_Maintenance.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Reporting_services_info.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Reporting_services_info.sql</FullPath>
+        </FileNode>
+        <FileNode Name="resizing_the_tempdb.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>resizing_the_tempdb.sql</FullPath>
+        </FileNode>
+        <FileNode Name="restoring_snapshot_db.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>restoring_snapshot_db.sql</FullPath>
+        </FileNode>
+        <FileNode Name="REVIEW.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>REVIEW.sql</FullPath>
+        </FileNode>
+        <FileNode Name="row_count_low_overhead.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>row_count_low_overhead.sql</FullPath>
+        </FileNode>
+        <FileNode Name="run_all_scripts_in_folder.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>run_all_scripts_in_folder.sql</FullPath>
+        </FileNode>
+        <FileNode Name="search_all_tables.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>search_all_tables.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Security_Audit_2012upwards.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Security_Audit_2012upwards.sql</FullPath>
+        </FileNode>
+        <FileNode Name="see_index_space_used.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>see_index_space_used.sql</FullPath>
+        </FileNode>
+        <FileNode Name="setup_ADE_monitoring_tables.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>setup_ADE_monitoring_tables.sql</FullPath>
+        </FileNode>
+        <FileNode Name="shrink_tempdb.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>shrink_tempdb.sql</FullPath>
+        </FileNode>
+        <FileNode Name="shrinkfile.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>shrinkfile.sql</FullPath>
+        </FileNode>
+        <FileNode Name="shrinkfile_estimate_time_left.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>shrinkfile_estimate_time_left.sql</FullPath>
+        </FileNode>
+        <FileNode Name="shrinkfile-increments.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>shrinkfile-increments.sql</FullPath>
+        </FileNode>
+        <FileNode Name="skewed_cx.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>skewed_cx.sql</FullPath>
+        </FileNode>
+        <FileNode Name="snapshot-db-create.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>snapshot-db-create.sql</FullPath>
+        </FileNode>
+        <FileNode Name="sp_help_revlogin.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>sp_help_revlogin.sql</FullPath>
+        </FileNode>
+        <FileNode Name="sp_who3.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>sp_who3.sql</FullPath>
+        </FileNode>
+        <FileNode Name="SQL_Version.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>SQL_Version.sql</FullPath>
+        </FileNode>
+        <FileNode Name="SQL-Differential-Backup-Size-Prediction-dz.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>SQL-Differential-Backup-Size-Prediction-dz.sql</FullPath>
+        </FileNode>
+        <FileNode Name="SQLQuery1.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>SQLQuery1.sql</FullPath>
+        </FileNode>
+        <FileNode Name="SQLQuery6.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>SQLQuery6.sql</FullPath>
+        </FileNode>
+        <FileNode Name="SQLskillsDifforFull.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>SQLskillsDifforFull.sql</FullPath>
+        </FileNode>
+        <FileNode Name="SSIS_package_Removal.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>SSIS_package_Removal.sql</FullPath>
+        </FileNode>
+        <FileNode Name="SSRS-INFO.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>SSRS-INFO.sql</FullPath>
+        </FileNode>
+        <FileNode Name="SSRS-Reports.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>SSRS-Reports.sql</FullPath>
+        </FileNode>
+        <FileNode Name="temp_datafile.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>temp_datafile.sql</FullPath>
+        </FileNode>
+        <FileNode Name="temp_db_growth_setting.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>temp_db_growth_setting.sql</FullPath>
+        </FileNode>
+        <FileNode Name="tempdb_contention_query.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>tempdb_contention_query.sql</FullPath>
+        </FileNode>
+        <FileNode Name="TempDB_Reclocate.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>TempDB_Reclocate.sql</FullPath>
+        </FileNode>
+        <FileNode Name="tempdb_table_results_stored.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>tempdb_table_results_stored.sql</FullPath>
+        </FileNode>
+        <FileNode Name="tempdb_usage.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>tempdb_usage.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Temporary_Elevation_of_Permissions.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Temporary_Elevation_of_Permissions.sql</FullPath>
+        </FileNode>
+        <FileNode Name="token_based_error.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>token_based_error.sql</FullPath>
+        </FileNode>
+        <FileNode Name="top_queries_by_age.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>top_queries_by_age.sql</FullPath>
+        </FileNode>
+        <FileNode Name="unused_indexes.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>unused_indexes.sql</FullPath>
+        </FileNode>
+        <FileNode Name="V1.6_ALL_IN_1_BACKUP.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>V1.6_ALL_IN_1_BACKUP.sql</FullPath>
+        </FileNode>
+        <FileNode Name="version_store_info.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>version_store_info.sql</FullPath>
+        </FileNode>
+        <FileNode Name="waits.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>waits.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Whats_Using_CPU.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Whats_Using_CPU.sql</FullPath>
+        </FileNode>
+        <FileNode Name="who_is_active_v11_00.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>who_is_active_v11_00.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Worst_10_queries.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Worst_10_queries.sql</FullPath>
+        </FileNode>
+        <FileNode Name="Worst_5_queriesCPU_IO.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>Worst_5_queriesCPU_IO.sql</FullPath>
+        </FileNode>
+        <FileNode Name="worst_queries.sql">
+          <AssociatedConnectionMoniker />
+          <AssociatedConnSrvName />
+          <AssociatedConnUserName />
+          <FullPath>worst_queries.sql</FullPath>
+        </FileNode>
+      </Items>
+    </LogicalFolder>
+    <LogicalFolder Name="Miscellaneous" Type="3" Sorted="true">
+      <Items />
+    </LogicalFolder>
+  </Items>
+</SqlWorkbenchSqlProject>
