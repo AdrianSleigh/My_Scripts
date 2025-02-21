@@ -1,0 +1,13 @@
+net stop mssqlsrver 
+
+net start mssqlsrver -m 
+
+or config manager add startup parameter -m
+
+sqlcmd -localhost
+
+create login NewSA with password ='saP@ssw0rd!'
+
+ALTER SERVER ROLE sysadmin ADD Member NewSA
+
+restart SQL services.....

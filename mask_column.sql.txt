@@ -1,0 +1,15 @@
+/****** Script for SelectTopNRows command from SSMS  ******/
+---Mask columns Adrian Sleigh 11/01/23
+-----------------------------------------------------------------------
+DECLARE
+@mask VARCHAR(5) = '*****'
+
+SELECT TOP (100000) [EventID]
+      ,[EventTime]
+      ,[Description]
+      ,SUBSTRING([UserId],1,3)+ @mask AS USERid
+      ,[LogLevel]
+      ,[SPRType]
+      ,SUBSTRING([FullUserName],2,4) + @mask + @mask AS UserName
+      ,[ActionName]
+       FROM [QuestPM].[dbo].[DomainUserAction]order by eventtime desc
