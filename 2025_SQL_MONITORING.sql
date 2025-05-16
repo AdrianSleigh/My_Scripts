@@ -253,7 +253,25 @@ CREATE TABLE [dbo].[WORST_QUERIES](
 ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
 GO
 
--------------------------------------------------------------------
+---------------------------------------------------------------
+	---STORED PROCEDURES
+	-------------------------------------------------------
+--added 16/05/25 as missing from build. Table already present
+Create Procedure [dbo].[sp_last_used_db]
+AS
+Insert into [SQL_Monitoring].[dbo].[LAST_USED_DB]
+( [dbname],[last_Restart],[Last_User_Seek],[Last_User_Scan],[Last_User_Lookup],[Last_User_Update]
+)
+SELECT d.name,
+(SELECT sqlserver_start_time FROM sys.dm_os_sys_info) AS Last_Restart,
+Last_user_seek = MAX(Last_user_seek),
+Last_user_scan = MAX (Last_user_scan), 
+Last_user_lookup = MAX(Last_user_lookup),
+Last_user_update = MAX (Last_user_update)
+FROM sys.dm_db_index_usage_stats AS i
+JOIN sys.databases AS d ON i.database_id=d.database_id
+GROUP BY d.name
+-------------------------------------------------------------	
 CREATE PROCEDURE [dbo].[sp_alert_backup]
 
 AS
