@@ -1,5 +1,5 @@
 /* Build script for SQL Monitoring database SQL_Monitoring 
-V2.0 28/12/22 Adrian Sleigh
+V2.1 20/05/25 Adrian Sleigh
 Assumes databases is already created
 */
 ---------------------------------------------------------------------------------------
@@ -254,7 +254,7 @@ CREATE TABLE [dbo].[WORST_QUERIES](
 GO
 
 ---------------------------------------------------------------
-	---STORED PROCEDURES
+-----------------	---STORED PROCEDURES
 	-------------------------------------------------------
 --added 16/05/25 as missing from build. Table already present
 Create Procedure [dbo].[sp_last_used_db]
@@ -271,6 +271,8 @@ Last_user_update = MAX (Last_user_update)
 FROM sys.dm_db_index_usage_stats AS i
 JOIN sys.databases AS d ON i.database_id=d.database_id
 GROUP BY d.name
+
+GO
 -------------------------------------------------------------	
 CREATE PROCEDURE [dbo].[sp_alert_backup]
 
@@ -334,6 +336,7 @@ GO
 -- Item:	sp_alert_drvspace alerts space less than 20% free. Run job every 15 mins
 -- Description Part of suite of scripts for monitoring
 -- =============================================
+*/
 CREATE PROCEDURE [dbo].[sp_alert_drvspace]
 AS
 	IF OBJECT_ID(N'tempdb..##drvspace') IS NOT NULL
@@ -1257,7 +1260,6 @@ ORDER BY db_buffer_MB DESC;
 ------------------------------------------------------ 
 
 GO
-USE [master]
 CREATE PROCEDURE [dbo].[sp_ineachdb]
   @command             nvarchar(max),
   @replace_character   nchar(1) = N'?',
@@ -2363,7 +2365,6 @@ EndSave:
 GO
 
 --------------------------------END---------------------------------------------
-
 
 
 
