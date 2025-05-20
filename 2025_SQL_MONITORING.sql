@@ -6,7 +6,8 @@ Assumes databases is already created
 USE [SQL_Monitoring]
 GO
 
-SET ANSI_NULLS ON
+SET ANSI_NULLS ON 
+	
 GO
 SET QUOTED_IDENTIFIER ON
 GO
