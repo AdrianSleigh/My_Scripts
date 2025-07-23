@@ -2,7 +2,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Written By Adrian Sleigh 20/8/18
---Version 15.00 revised code and tidy 22/07/25 added extendedEvent List and mail
+--Version 16.00 revised code and tidy 23/07/25 added extendedEvent List and mail
+
 ----------------------------------------------------
 SELECT 
     CONVERT(VARCHAR, GETDATE(), 3) + 
@@ -13,6 +14,7 @@ SELECT
 FROM 
     sys.dm_os_sys_info;
 
+------------------------------------------------
 --CHECK VERSION---------------------------------
 DECLARE @CurrentVersion VARCHAR(20) = CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR);
 DECLARE @MajorVersion INT = CAST(LEFT(@CurrentVersion, CHARINDEX('.', @CurrentVersion) - 1) AS INT);
@@ -77,7 +79,6 @@ SELECT
   SUBSTRING(SUSER_SNAME(),1,20)AS RanBy, 
   SUBSTRING(HOST_NAME(),1,20) AS RanFrom,
   GETDATE() AS ExecutionTime,
-  SUBSTRING(@service_account,1,30) AS Service_account,
   SUBSTRING(CAST(SERVERPROPERTY('MachineName')AS varchar(30)),1,20) AS ComputerName,
   SUBSTRING(CAST(SERVERPROPERTY('ServerName') AS varchar(30)),1,20) AS InstanceName 
   FROM SYS.DM_EXEC_CONNECTIONS WHERE SESSION_ID = @@SPID
@@ -154,8 +155,6 @@ DSS.process_id
 ----------------------------------------------------------------------------
 --GET PROXY ACCOUNTS v6.0 10/03/21
 
-PRINT '--------------'
-
 USE msdb;
 GO
 -- Create temp table
@@ -223,7 +222,7 @@ LEFT OUTER JOIN sys.linked_logins b ON b.server_id = a.server_id
 LEFT OUTER JOIN sys.server_principals c ON c.principal_id = b.local_principal_id
 ORDER BY a.[name] ASC
 --------------------------------------------------------------------------
-------------------------------------------------------------
+
 --GET MAIL CONFIGURATION
 --List all Database Mail profiles
 PRINT 'MAIL CONFIG'
@@ -450,6 +449,7 @@ is_encrypted
   GO
   ------------------------------------------------------------------------
   --BUSIEST DATABASES%
+
 WITH db_stats AS (
     SELECT 
         DB_NAME(CAST(pa.value AS INT)) AS database_name,
@@ -1053,7 +1053,7 @@ BEGIN
     PRINT 'NO USER TABLES FOUND IN MASTER';
 END
 GO
-
+	PRINT '-------------------------------'
 -- Check for user tables in MSDB
 USE msdb;
 GO
@@ -1078,9 +1078,10 @@ BEGIN
     PRINT 'NO USER TABLES FOUND IN MSDB';
 END
 GO
-------------------------
+	PRINT '----------------------------'
 
 PRINT 'POTENTIAL ISSUES FOUND'
+PRINT '----------------------'
 -----CHECK MAXDOP ----------------------------
 DECLARE @service_account VARCHAR(50) = '';
 DECLARE @fillfactor VARCHAR(2) = '0';
@@ -1144,23 +1145,23 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'MAXDOP is correctly set.';
+    PRINT 'MAXDOP IS CORRECTLY SET.';
 END
-
+	PRINT '------------------------'
 -- Check cost threshold
 IF @costthreshhold <> '50'
 BEGIN
     PRINT 'COST THRESHOLD FOR PARALLELISM IS NOT SET TO VALUE(50)';
-    PRINT 'Current Cost Threshold: ' + @costthreshhold;
+    PRINT 'CURRENT COST THRESHOLD: ' + @costthreshhold;
 END
 ELSE
-    PRINT 'Current Cost Threshold: ' + @costthreshhold;
+    PRINT 'CURRENT COST THRESHOLD: ' + @costthreshhold;
 
 -- Check DAC
 IF @DAC <> '1'
 BEGIN
     PRINT 'REMOTE ADMIN CONNECTION NOT ENABLED (DAC)';
-    PRINT 'Current DAC Setting: ' + @DAC;
+    PRINT 'CURRENT DAC SETTING: ' + @DAC;
 END
 ELSE
     PRINT 'REMOTE DAC ENABLED';
@@ -1169,7 +1170,7 @@ ELSE
 IF @advanced <> '1'
 BEGIN
     PRINT 'SHOW ADVANCED OPTIONS NOT ENABLED (1)';
-    PRINT 'Current Advanced Options Setting: ' + @advanced;
+    PRINT 'CURRENT ADVANCED OPTIONS SETTING: ' + @advanced;
 END
 ELSE
     PRINT 'ADVANCED OPTIONS ENABLED';
@@ -1213,7 +1214,7 @@ BEGIN TRY
         END
         ELSE
         BEGIN
-            PRINT 'SSRS database is not part of an Availability Group.';
+            PRINT 'SSRS DATABASE IS NOT PART OF AN AVAILABILITY GROUP.';
         END
 
         -- Step 3: Run SSRS config query
@@ -1245,6 +1246,7 @@ END TRY
 BEGIN CATCH
     PRINT '';
 END CATCH
+PRINT '---------------------------------------'
   ----------------------------------------------------------------
  -- KERBEROS CHECK
 
@@ -1271,7 +1273,7 @@ FETCH NEXT FROM db_cursor INTO @DBName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    PRINT 'Checking Query Store settings for database: ' + QUOTENAME(@DBName);
+    PRINT 'CHECKING QUERY STORE SETTINGS FOR DATABASE: ' + QUOTENAME(@DBName);
 
     BEGIN TRY
         SET @SQL2 = '
@@ -1289,7 +1291,7 @@ BEGIN
         EXEC sp_executesql @SQL2;
     END TRY
     BEGIN CATCH
-        PRINT 'Query Store not supported or accessible in database: ' + QUOTENAME(@DBName);
+        PRINT 'QUERY STORE NOT SUPPORTED OR ACCESSIBLE IN DATABASE: ' + QUOTENAME(@DBName);
         PRINT ERROR_MESSAGE();
     END CATCH;
 
@@ -1299,7 +1301,6 @@ END
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
   ----------------------------------------------------------------
-  
   ---FIND ORPHANED USERS
 DECLARE @DatabaseName NVARCHAR(128);
 DECLARE @SQL3 NVARCHAR(MAX);
@@ -1413,10 +1414,9 @@ ELSE
 BEGIN
     PRINT 'NO FAILED LOGINS LAST 24 HOURS';
 END
--------------------------------------------------
---CHECK CURRENT ERRORLOG FOR 'ERRORS' LAST 7 DAYS
-PRINT 'CURRENT ERRORLOG ANY DISTINCT[ERRORS] LAST 7 DAYS'
-PRINT '-------------------------------------------------'
+-----------------------------------------------
+PRINT 'CURRENT ERRORLOG [ERRORS]'
+PRINT '-------------------------'
 -- Drop the temp table if it already exists
 IF OBJECT_ID('tempdb..#ReadErrorLog') IS NOT NULL
     DROP TABLE #ReadErrorLog;
@@ -1434,29 +1434,19 @@ CREATE TABLE #ReadErrorLog (
 INSERT INTO #ReadErrorLog
 EXEC xp_readerrorlog;
 
--- Query the temp table for distinct ProcessInfo entries with latest logDate and error text from 7 days ago
-WITH RankedLogs AS (
-    SELECT 
-        LogDate,
-        ProcessInfo,
-        LogText,
-        ROW_NUMBER() OVER (PARTITION BY ProcessInfo ORDER BY LogDate DESC) AS rn
+SELECT   LogDate,ProcessInfo,LogText
     FROM #ReadErrorLog
-    WHERE 
-        LogText LIKE '%error%' AND
-        CONVERT(DATE, LogDate) = CONVERT(DATE, GETDATE() - 7)
-)
-SELECT 
-    SUBSTRING(ProcessInfo, 1, 20) AS ProcessInfo,
-    LogDate,
-    LogText
-FROM RankedLogs
-WHERE rn = 1;
+    WHERE 	
+	--LogDate >= getdate()-7
+    -- AND   
+	LogText LIKE '%error%' 
 
 -- Clean up
-DROP TABLE #ReadErrorLog;
+DROP TABLE #ReadErrorLog
 -----------------------------------------------
 --------------------BACKUP INFORMATION FOR 1 WEEK
+PRINT 'FULL BACKUPS FOR LAST WEEK'
+PRINT '---------------------'
 		USE MSDB
 		 SELECT 
                SUBSTRING ([database_name],1,50) as 'DB',
@@ -1478,5 +1468,5 @@ DROP TABLE #ReadErrorLog;
 	    ORDER BY database_name ,backup_start_date DESC
 --------------------------------------------------------------------------------------------
 
-PRINT 'REPORT COMPLETED RAN ----> ' + CAST(getdate()AS VARCHAR(20))
+PRINT 'REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
