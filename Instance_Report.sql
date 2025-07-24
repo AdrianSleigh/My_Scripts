@@ -2,8 +2,7 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Written By Adrian Sleigh 20/8/18
---Version 16.00 revised code and tidy 23/07/25 added extendedEvent List and mail
-
+--Version 17.00 revised code and tidy 24/07/25 
 ----------------------------------------------------
 SELECT 
     CONVERT(VARCHAR, GETDATE(), 3) + 
@@ -14,8 +13,7 @@ SELECT
 FROM 
     sys.dm_os_sys_info;
 
-------------------------------------------------
---CHECK VERSION---------------------------------
+--CHECK SQL VERSION---------------------------------
 DECLARE @CurrentVersion VARCHAR(20) = CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR);
 DECLARE @MajorVersion INT = CAST(LEFT(@CurrentVersion, CHARINDEX('.', @CurrentVersion) - 1) AS INT);
 
@@ -23,9 +21,19 @@ DECLARE @LatestVersion VARCHAR(20);
 DECLARE @VersionName VARCHAR(50);
 
 -- Set latest version based on major version
-IF @MajorVersion = 13
+IF @MajorVersion = 15
 BEGIN
-    SET @LatestVersion = '13.0.6460.7'; -- SQL Server 2016 SP3 CU9 (latest as of July 2025)
+    SET @LatestVersion = '15.0.4435.7'; -- SQL Server 2019 CU32
+    SET @VersionName = 'SQL Server 2019';
+END
+ELSE IF @MajorVersion = 14
+BEGIN
+    SET @LatestVersion = '14.0.3456.2'; -- SQL Server 2017 CU31
+    SET @VersionName = 'SQL Server 2017';
+END
+ELSE IF @MajorVersion = 13
+BEGIN
+    SET @LatestVersion = '13.0.6460.7'; -- SQL Server 2016 SP3 CU9
     SET @VersionName = 'SQL Server 2016';
 END
 ELSE IF @MajorVersion = 12
@@ -45,7 +53,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'Unsupported SQL Server version: ' + @CurrentVersion;
+    PRINT 'Possible Unsupported SQL Server version: ' + @CurrentVersion;
     RETURN;
 END
 
@@ -57,6 +65,7 @@ IF @CurrentVersion < @LatestVersion
     PRINT 'Update Required: Your ' + @VersionName + ' instance is not fully patched !';
 ELSE
     PRINT 'Up to Date: Your ' + @VersionName + ' instance is running the latest patch.';
+
 -----------------------------------------------------------------
 --GET INSTANCE PROPERTIES
 SELECT 
