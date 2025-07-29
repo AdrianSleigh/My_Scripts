@@ -2,7 +2,7 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Written By Adrian Sleigh 20/8/18
---Version 17.00 revised code and tidy 24/07/25 
+--Version 18.00 revised code and tidy 29/07/25 
 ----------------------------------------------------
 SELECT 
     CONVERT(VARCHAR, GETDATE(), 3) + 
@@ -823,19 +823,20 @@ DEALLOCATE db_cursor;
 PRINT 'FILE INFORMATION' 
 PRINT '----------------'
 SELECT
-    SUBSTRING(D.name,1,50)AS databasename,
-	file_id, 
-	F.size AS KB,
-	F.size*8/1024 AS MB,
-	SUBSTRING(F.physical_name,1,100) AS physicalfile,
-    SUBSTRING(F.state_desc,1,10) AS OnlineStatus
-    
+    SUBSTRING(D.name, 1, 50) AS databasename,
+    F.file_id, 
+    F.size AS KB,
+    CAST(F.size AS BIGINT) * 8 / 1024 AS MB,
+    SUBSTRING(F.physical_name, 1, 100) AS physicalfile,
+    SUBSTRING(F.state_desc, 1, 10) AS OnlineStatus
 FROM 
     sys.master_files F
     INNER JOIN sys.databases D ON D.database_id = F.database_id
-	WHERE D.name NOT IN('model','msdb','master','tempdb')
+WHERE 
+    D.name NOT IN ('model', 'msdb', 'master', 'tempdb')
 ORDER BY
-    D.name
+    D.name;
+
 
 ------GET DEFAULT BACKUP LOCATION
 
