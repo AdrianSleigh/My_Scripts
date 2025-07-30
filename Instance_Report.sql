@@ -2,7 +2,7 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Written By Adrian Sleigh 20/8/18
---Version 18.00 revised code and tidy 29/07/25 
+--Version 19.00 revised code and tidy 30/07/25 
 ----------------------------------------------------
 SELECT 
     CONVERT(VARCHAR, GETDATE(), 3) + 
@@ -1090,8 +1090,87 @@ END
 GO
 	PRINT '----------------------------'
 
-PRINT 'POTENTIAL ISSUES FOUND'
-PRINT '----------------------'
+	--------------------------------------------------
+	--Databases that are accessing system tables
+--------------------------------------------
+SET NOCOUNT ON;
+
+-- Create a permanent results table in tempdb
+USE tempdb;
+IF OBJECT_ID('dbo.SystemTableScanResults') IS NOT NULL DROP TABLE dbo.SystemTableScanResults;
+CREATE TABLE dbo.SystemTableScanResults (
+    DatabaseName SYSNAME,
+    SystemTable SYSNAME,
+    RecommendedView SYSNAME,
+    ReferencingObject SYSNAME,
+    ObjectType NVARCHAR(60),
+    SchemaName SYSNAME,
+    CodeSnippet NVARCHAR(MAX)
+);
+
+DECLARE @dbName2 SYSNAME;
+DECLARE @sql NVARCHAR(MAX);
+
+-- Loop through user databases
+DECLARE dbs CURSOR LOCAL FAST_FORWARD FOR
+SELECT name FROM sys.databases WHERE database_id > 4 AND state_desc = 'ONLINE';
+
+OPEN dbs;
+FETCH NEXT FROM dbs INTO @dbName2;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @sql = '
+    USE [' + @dbName2 + '];
+    SET NOCOUNT ON;
+
+    WITH SystemTableMap AS (
+        SELECT * FROM (VALUES
+            (''sysobjects'', ''sys.objects''),
+            (''sysindexes'', ''sys.indexes''),
+            (''syscolumns'', ''sys.columns''),
+            (''sysusers'', ''sys.database_principals''),
+            (''syscomments'', ''sys.sql_modules''),
+            (''sysdepends'', ''sys.sql_expression_dependencies'')
+        ) AS tbl(SystemTable, RecommendedView)
+    )
+    INSERT INTO tempdb.dbo.SystemTableScanResults
+    SELECT
+        DB_NAME(),
+        stm.SystemTable,
+        stm.RecommendedView,
+        OBJECT_NAME(m.object_id),
+        o.type_desc,
+        OBJECT_SCHEMA_NAME(m.object_id),
+        LEFT(m.definition, 500)
+    FROM sys.sql_modules m
+    JOIN sys.objects o ON m.object_id = o.object_id
+    CROSS JOIN SystemTableMap stm
+    WHERE m.definition LIKE ''%'' + stm.SystemTable + ''%'';
+    ';
+
+    EXEC (@sql);
+
+    FETCH NEXT FROM dbs INTO @dbName2;
+END
+
+CLOSE dbs;
+DEALLOCATE dbs;
+
+-- Output results
+PRINT 'DATABASES THAT ARE ACCESSING SYSTEM TABLES '
+SELECT
+SUBSTRING(DatabaseName,1,60)AS DatabaseName,
+SUBSTRING(SystemTable,1,20)AS SystemTable,
+SUBSTRING(RecommendedView,1,20)AS USE_Substitute,
+SUBSTRING(ReferencingObject,1,30)AS ReferencingObject,
+SUBSTRING(ObjectType,1,30)AS ObjectType,
+SUBSTRING(SchemaName,1,20)AS SchemaName--,CodeSnippet
+FROM tempdb.dbo.SystemTableScanResults;
+
+-- Optional: clean up
+ DROP TABLE tempdb.dbo.SystemTableScanResults;
+----------------------------------------------
 -----CHECK MAXDOP ----------------------------
 DECLARE @service_account VARCHAR(50) = '';
 DECLARE @fillfactor VARCHAR(2) = '0';
