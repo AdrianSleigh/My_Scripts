@@ -1,7 +1,7 @@
 
 SET NOCOUNT ON
 --SQL Instance Report
---Written By Adrian Sleigh V1.00 20/8/18
+--Written By Adrian Sleigh 20/8/18
 --Version 20.00 revised code and tidy 31/07/25 check for Hallengren scripts
 ----------------------------------------------------
 SELECT 
@@ -150,7 +150,7 @@ SELECT
  ------------------------------------------------------------------------
 --GET SERVICE ACCOUNT INFO V6.0 10/03/21
  PRINT 'SERVICE ACCOUNTS'
- PRINT '----------------' 
+
 SELECT
 SUBSTRING(DSS.servicename,1,40),
 SUBSTRING(DSS.startup_type_desc,1,20),
@@ -197,6 +197,7 @@ END
 ELSE
 BEGIN
     PRINT 'NO PROXY ACCOUNTS PRESENT';
+	PRINT '-------------------------'
 END
 
 -- Clean up
@@ -256,7 +257,7 @@ FROM msdb.dbo.sysmail_account;
 
 --Show all mail items in the queue
 PRINT 'LAST 20 MAIL ITEMS LOGGED'
-PRINT '------------------'
+PRINT '-------------------------'
 SELECT TOP 20
 mailitem_id,profile_id,send_request_date,
 CAST(SUBSTRING(recipients,1,55)AS VARCHAR (55)) AS Recipients,
@@ -457,7 +458,9 @@ is_encrypted
   GO
   ------------------------------------------------------------------------
   --BUSIEST DATABASES%
-
+  PRINT 'BUSIEST DATABASES'
+  PRINT '-----------------'
+  GO
 WITH db_stats AS (
     SELECT 
         DB_NAME(CAST(pa.value AS INT)) AS database_name,
@@ -492,8 +495,9 @@ ORDER BY
  
 ---------------------------------------------------------------------------
 -- Get current SQL Server version
+PRINT 'DB COMPATIBILITY'
+PRINT '----------------'
 DECLARE @RecommendedLevel INT;
-
 -- Determine recommended compatibility level based on version
 IF (SELECT CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR)) LIKE '16.%' -- SQL Server 2022
     SET @RecommendedLevel = 160;
@@ -543,6 +547,7 @@ IF EXISTS ( SELECT 1 FROM sys.databases WHERE state_desc = 'OFFLINE'
 )
 BEGIN
   PRINT 'OFFLINE DATABASE LIST'
+  PRINT '---------------------'
 SELECT
 SUBSTRING(db.name,1,50) AS Offline_databases,
 SUBSTRING(mf.name,1, 60) AS dbFilename,
@@ -699,7 +704,6 @@ BEGIN
 END
 -------------------------------------------------------------
 
-----------------------------------------------------------------------------
 --GET OLD STATISTICS
 --find any stats that are 2 days old
 --31/07/25 added
@@ -812,7 +816,7 @@ DEALLOCATE db_cursor;
 END
 ELSE
 BEGIN
-    PRINT 'All statistics are up to date. No action needed.';
+    PRINT 'ALL STATISTICS ARE RECENT. No action needed.';
 END
 --------------------------------------------------------------------------
 	  
@@ -1073,7 +1077,7 @@ END
 
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
-
+PRINT '------------------------------------------'
 --------------------------------------------------
 ---GET FILE INFO
 PRINT 'FILE INFORMATION' 
@@ -1677,7 +1681,7 @@ BEGIN
           )
     )
     BEGIN
-        DECLARE @msg NVARCHAR(MAX) = ''Orphaned accounts found in database: ' + @DatabaseName + ''';
+        DECLARE @msg NVARCHAR(MAX) = ''ORPHANED ACCOUNTS FOUND IN DATABASE: ' + @DatabaseName + ''';
         PRINT @msg;
 
         SELECT ''- '' + dp.name AS OrphanedUser
@@ -1726,7 +1730,7 @@ BEGIN
     SELECT * FROM @Results;
 END
   -----------------------------------------------------------------
-PRINT 'LOOK FOR LOGIN FAILS IN LAST 24 HOURS'
+PRINT 'Looking for login fails in the last 24 hours....'
 IF EXISTS (
     SELECT 1
     FROM sys.fn_trace_gettable(
@@ -1791,7 +1795,7 @@ DROP TABLE #ReadErrorLog
 -----------------------------------------------
 --------------------BACKUP INFORMATION FOR 1 WEEK
 PRINT 'FULL BACKUPS FOR LAST WEEK'
-PRINT '---------------------'
+PRINT '--------------------------'
 		USE MSDB
 		 SELECT 
                SUBSTRING ([database_name],1,50) as 'DB',
