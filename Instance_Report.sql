@@ -1,8 +1,8 @@
 
 SET NOCOUNT ON
 --SQL Instance Report
---Written By Adrian Sleigh 20/8/18
---Version 19.00 revised code and tidy 30/07/25 
+--Written By Adrian Sleigh V1.00 20/8/18
+--Version 20.00 revised code and tidy 31/07/25 check for Hallengren scripts
 ----------------------------------------------------
 SELECT 
     CONVERT(VARCHAR, GETDATE(), 3) + 
@@ -439,7 +439,6 @@ DROP TABLE #TempErrorLogs;
 					END
 			END;
 	
-
 ----------------------------------------------------------------------------
 --GET DATABASE INFO
 PRINT '                                            '
@@ -558,7 +557,148 @@ db.state = 6 -- OFFLINE
 END
   ELSE 
   BEGIN PRINT 'NO OFFLINE DATABASES PRESENT';
+        PRINT '----------------------------'
   END
+----------------------------------------------------------------------------
+--CHECK FOR HALLENGREN DEPLOYED SCRIPTS -VERSION
+-- Multi-Database Ola Hallengren Feature Detection and Version Estimator
+
+PRINT 'Scanning all user databases for Ola Hallengren procedures...';
+SET NOCOUNT ON
+-- Temp tables
+IF OBJECT_ID('tempdb..##FeatureCheck') IS NOT NULL DROP TABLE ##FeatureCheck;
+CREATE TABLE ##FeatureCheck (
+    DatabaseName NVARCHAR(128),
+    Feature NVARCHAR(200),
+    Year INT,
+    Found BIT
+);
+
+DECLARE @DatabaseName3 NVARCHAR(128);
+DECLARE @HasAnyOla BIT = 0;
+
+-- Cursor to loop through user databases (excluding system and secondaries)
+DECLARE db_cursor CURSOR FOR
+SELECT d.name
+FROM sys.databases d
+LEFT JOIN sys.dm_hadr_availability_replica_states rs
+    ON d.replica_id = rs.replica_id
+WHERE d.state_desc = 'ONLINE'
+  AND d.name NOT IN ('master', 'model', 'msdb', 'tempdb')
+  AND (d.replica_id IS NULL OR rs.role_desc = 'PRIMARY');
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @DatabaseName3;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    DECLARE @CheckSQL NVARCHAR(MAX);
+    DECLARE @HasOla BIT = 0;
+
+    -- Check for Ola procedures in this database
+    SET @CheckSQL = '
+    USE ' + QUOTENAME(@DatabaseName3) + ';
+    IF EXISTS (
+        SELECT 1 FROM sys.objects 
+        WHERE name IN (''DatabaseBackup'', ''IndexOptimize'', ''CommandExecute'')
+        AND type = ''P''
+    )
+    BEGIN
+        SELECT @HasOlaOut = 1;
+    END
+    ELSE
+    BEGIN
+        SELECT @HasOlaOut = 0;
+    END
+    ';
+
+    EXEC sp_executesql @CheckSQL, N'@HasOlaOut BIT OUTPUT', @HasOlaOut = @HasOla OUTPUT;
+
+    IF @HasOla = 1
+    BEGIN
+        SET @HasAnyOla = 1;
+
+        DECLARE @Feature NVARCHAR(200), @Year INT, @Pattern NVARCHAR(MAX);
+        DECLARE @SQL3 NVARCHAR(MAX), @Found BIT;
+
+        DECLARE FeatureCursor CURSOR FOR
+        SELECT * FROM (
+            VALUES
+            ('@CleanupTime', 2019, '%@CleanupTime%'),
+            ('@DirectoryStructure', 2020, '%@DirectoryStructure%'),
+            ('@LogToTable with CommandType', 2021, '%@LogToTable%CommandType%'),
+            ('@Credential for Azure/S3', 2022, '%@Credential%TO URL%'),
+            ('@CompressionLevelNumeric', 2022, '%@CompressionLevelNumeric%'),
+            ('COPY_ONLY with AG awareness', 2022, '%COPY_ONLY%AvailabilityGroup%'),
+            ('@AvailabilityGroupReplicas = ALL', 2023, '%@AvailabilityGroupReplicas%ALL%'),
+            ('@URL and @MirrorURL for S3', 2023, '%@URL%@MirrorURL%'),
+            ('@Resumable = Y', 2024, '%@Resumable%RESUMABLE = ON%'),
+            ('Filtered index support with @Resumable', 2024, '%filtered%@Resumable%'),
+            ('Always On awareness in CommandExecute', 2024, '%dm_hadr_availability_replica_states%'),
+            ('@CompressionLevel and ZSTD', 2025, '%@CompressionLevel%ZSTD%'),
+            ('sys.dm_os_file_exists usage', 2025, '%sys.dm_os_file_exists%'),
+            ('EXPIREDATE and RETAINDAYS', 2025, '%EXPIREDATE%RETAINDAYS%')
+        ) AS Features(Feature, Year, Pattern);
+
+        OPEN FeatureCursor;
+        FETCH NEXT FROM FeatureCursor INTO @Feature, @Year, @Pattern;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            SET @SQL3 = '
+            USE ' + QUOTENAME(@DatabaseName3) + ';
+            SELECT @FoundOut = CASE WHEN EXISTS (
+                SELECT 1 FROM sys.sql_modules 
+                WHERE definition LIKE @Pattern
+            ) THEN 1 ELSE 0 END';
+
+            EXEC sp_executesql @SQL3, 
+                N'@Pattern NVARCHAR(MAX), @FoundOut BIT OUTPUT', 
+                @Pattern = @Pattern, @FoundOut = @Found OUTPUT;
+
+            INSERT INTO ##FeatureCheck (DatabaseName, Feature, Year, Found)
+            VALUES (@DatabaseName3, @Feature, @Year, @Found);
+
+            FETCH NEXT FROM FeatureCursor INTO @Feature, @Year, @Pattern;
+        END
+
+        CLOSE FeatureCursor;
+        DEALLOCATE FeatureCursor;
+    END
+
+    FETCH NEXT FROM db_cursor INTO @DatabaseName3;
+END
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+-- Output results
+IF EXISTS (SELECT 1 FROM ##FeatureCheck)
+BEGIN
+    PRINT 'Feature Detection Results:';
+    SELECT 
+        SUBSTRING(DatabaseName,1,50)AS DatabaseName,
+        Year,
+        SUBSTRING(Feature,1,30)AS Feature,
+        CASE WHEN Found = 1 THEN 'Present' ELSE 'Not Found' END AS Status
+    FROM ##FeatureCheck
+    ORDER BY DatabaseName, Year, Feature;
+
+    PRINT 'Estimated Ola Hallengren version per database:';
+    SELECT 
+        SUBSTRING(DatabaseName,1,50)AS DatabaseName,
+        MAX(Year) AS EstimatedVersionYear
+    FROM ##FeatureCheck
+    WHERE Found = 1
+    GROUP BY DatabaseName
+    ORDER BY DatabaseName;
+END
+ELSE
+BEGIN
+    PRINT 'NO OLA HALLENGREN SCRIPTS PRESENT IN ANY DATABASE.';
+END
+-------------------------------------------------------------
+
 ----------------------------------------------------------------------------
 --GET OLD STATISTICS
 --find any stats that are 2 days old
