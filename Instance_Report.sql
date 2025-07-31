@@ -2,7 +2,18 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Written By Adrian Sleigh 20/8/18
---Version 20.00 revised code and tidy 31/07/25 check for Hallengren scripts
+--Version 21.00 revised code and tidy 01/08/25 emojis
+-- Basic emoji usage in PRINT statements
+/*
+PRINT N'✅ Operation completed successfully!';
+PRINT N'⚠️ Warning: Memory usage is high!';
+PRINT N'❌ Error: Unable to connect to the database.';
+PRINT N'💡 Tip: Consider adjusting max server memory.';
+PRINT N'🔍 Checking system memory...';
+PRINT N'📊 Memory Report Generated.';
+PRINT N'🧠 SQL Server Memory Health Check';
+PRINT N'🚀 Performance tuning in progress...';
+*/
 ----------------------------------------------------
 SELECT 
     CONVERT(VARCHAR, GETDATE(), 3) + 
@@ -147,6 +158,43 @@ SELECT
 	  [committed_kb]/1024 AS 'Used_for_SQL_MB',
 	  [committed_target_kb]/1024 AS 'Allocated_Max_Memory_SQL_MB'
 	  FROM sys.dm_os_sys_info
+
+------------------------------------
+---CHECK MEMORY SETTINGS
+------------------------------------
+-- Declare variables
+DECLARE @TotalMemoryMB INT, @AvailableMemoryMB INT, @AvailablePercent DECIMAL(5,2), @SuggestedMaxMemoryMB INT;
+
+-- Get memory values
+SELECT 
+    @TotalMemoryMB = total_physical_memory_kb / 1024,
+    @AvailableMemoryMB = available_physical_memory_kb / 1024
+FROM sys.dm_os_sys_memory;
+
+-- Calculate available memory percentage
+SET @AvailablePercent = (CAST(@AvailableMemoryMB AS DECIMAL(10,2)) / @TotalMemoryMB) * 100;
+
+-- Suggest max server memory (leave 8 GB for OS and other processes)
+SET @SuggestedMaxMemoryMB = @TotalMemoryMB - 8192;
+
+-- Output memory status
+PRINT '--- Memory Health Check ---';
+PRINT 'Total Physical Memory (MB): ' + CAST(@TotalMemoryMB AS VARCHAR);
+PRINT 'Current Available Physical Memory (MB): ' + CAST(@AvailableMemoryMB AS VARCHAR);
+PRINT 'Available Memory Percentage: ' + CAST(@AvailablePercent AS VARCHAR) + '%';
+
+-- Output warning and recommendation
+IF @AvailablePercent < 10
+BEGIN
+    PRINT 'WARNING: AVAILABLE MEMORY BELOW 10%. SQL Server or other processes may be consuming too much memory.';
+    PRINT 'Suggested max server memory setting for SQL Server: ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB';
+END
+ELSE
+BEGIN
+    PRINT ' Memory availability is within a healthy range.';
+    PRINT 'You may still consider setting max server memory to around ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB to ensure OS stability.';
+END
+
  ------------------------------------------------------------------------
 --GET SERVICE ACCOUNT INFO V6.0 10/03/21
  PRINT 'SERVICE ACCOUNTS'
