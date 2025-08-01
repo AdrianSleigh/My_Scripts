@@ -3,40 +3,38 @@ SET NOCOUNT ON
 --SQL Instance Report
 --Written By Adrian Sleigh 20/8/18
 --Version 21.00 revised code and tidy 01/08/25 emojis
--- Basic emoji usage in PRINT statements
-/*
-PRINT N'✅ Operation completed successfully!';
-PRINT N'⚠️ Warning: Memory usage is high!';
-PRINT N'❌ Error: Unable to connect to the database.';
-PRINT N'💡 Tip: Consider adjusting max server memory.';
-PRINT N'🔍 Checking system memory...';
-PRINT N'📊 Memory Report Generated.';
-PRINT N'🧠 SQL Server Memory Health Check';
-PRINT N'🚀 Performance tuning in progress...';
-*/
+--Basic emoji usage in PRINT statements
 ----------------------------------------------------
+PRINT N'📊 Generating Report...';
 SELECT 
     CONVERT(VARCHAR, GETDATE(), 3) + 
     ' MSSQL SQL SERVER REPORT - INSTANCE NAME IS ' + 
     @@SERVERNAME + 
     ' | Last Restart: ' + 
-    CONVERT(VARCHAR, sqlserver_start_time, 120) AS [Report Header]
+    CONVERT(VARCHAR, sqlserver_start_time, 120) --AS [Report Header]
 FROM 
     sys.dm_os_sys_info;
 
 --CHECK SQL VERSION---------------------------------
 DECLARE @CurrentVersion VARCHAR(20) = CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR);
 DECLARE @MajorVersion INT = CAST(LEFT(@CurrentVersion, CHARINDEX('.', @CurrentVersion) - 1) AS INT);
-
 DECLARE @LatestVersion VARCHAR(20);
 DECLARE @VersionName VARCHAR(50);
 
 -- Set latest version based on major version
-IF @MajorVersion = 15
+
+IF @MajorVersion = 16
 BEGIN
-    SET @LatestVersion = '15.0.4435.7'; -- SQL Server 2019 CU32
+    SET @LatestVersion = '16.0.4205.1'; -- SQL Server 2022 CU20 July 2025
+    SET @VersionName = 'SQL Server 2022';
+END
+
+ELSE IF @MajorVersion = 15
+BEGIN
+    SET @LatestVersion = '15.0.4435.7'; -- SQL Server 2019 CU32 July 2025
     SET @VersionName = 'SQL Server 2019';
 END
+
 ELSE IF @MajorVersion = 14
 BEGIN
     SET @LatestVersion = '14.0.3456.2'; -- SQL Server 2017 CU31
@@ -64,19 +62,18 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'Possible Unsupported SQL Server version: ' + @CurrentVersion;
+    PRINT N'⚠️ POSSIBLE UNSUPPORTED VERSION: ' + @CurrentVersion;
     RETURN;
 END
 
 PRINT 'Detected Version: ' + @VersionName;
 PRINT 'Current SQL Server Version: ' + @CurrentVersion;
-PRINT 'Latest Known Version: ' + @LatestVersion;
+PRINT 'Latest Known Version August 2025: ' + @LatestVersion;
 
 IF @CurrentVersion < @LatestVersion
-    PRINT 'Update Required: Your ' + @VersionName + ' instance is not fully patched !';
+    PRINT N'⚠️ Update Required: Your ' + @VersionName + ' instance is not fully patched !';
 ELSE
-    PRINT 'Up to Date: Your ' + @VersionName + ' instance is running the latest patch.';
-
+    PRINT N'✅ Up to Date: Your ' + @VersionName + ' instance is likely running the latest patch.';
 -----------------------------------------------------------------
 --GET INSTANCE PROPERTIES
 SELECT 
@@ -178,7 +175,7 @@ SET @AvailablePercent = (CAST(@AvailableMemoryMB AS DECIMAL(10,2)) / @TotalMemor
 SET @SuggestedMaxMemoryMB = @TotalMemoryMB - 8192;
 
 -- Output memory status
-PRINT '--- Memory Health Check ---';
+PRINT '-- Memory Health Check ---';
 PRINT 'Total Physical Memory (MB): ' + CAST(@TotalMemoryMB AS VARCHAR);
 PRINT 'Current Available Physical Memory (MB): ' + CAST(@AvailableMemoryMB AS VARCHAR);
 PRINT 'Available Memory Percentage: ' + CAST(@AvailablePercent AS VARCHAR) + '%';
@@ -186,12 +183,12 @@ PRINT 'Available Memory Percentage: ' + CAST(@AvailablePercent AS VARCHAR) + '%'
 -- Output warning and recommendation
 IF @AvailablePercent < 10
 BEGIN
-    PRINT 'WARNING: AVAILABLE MEMORY BELOW 10%. SQL Server or other processes may be consuming too much memory.';
-    PRINT 'Suggested max server memory setting for SQL Server: ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB';
+    PRINT N'⚠️ WARNING: AVAILABLE MEMORY BELOW 10%. SQL Server or other processes may be consuming too much memory.';
+    PRINT N'💡 SUGGESTED Max Server Memory setting for SQL Server: ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB';
 END
 ELSE
 BEGIN
-    PRINT ' Memory availability is within a healthy range.';
+    PRINT N'✅ Memory availability is within a healthy range.';
     PRINT 'You may still consider setting max server memory to around ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB to ensure OS stability.';
 END
 
@@ -376,7 +373,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'INSTANT FILE INITIALISATION NOT SETUP';
+    PRINT N'⚠️ INSTANT FILE INITIALISATION NOT SETUP';
 END
 
 -- Clean up
@@ -480,7 +477,7 @@ DROP TABLE #TempErrorLogs;
 
 				IF (@MaxDop <> @RecommendedMaxDop)
 					BEGIN
-						PRINT 'In case you want to change MAXDOP to the recommeded value, please use this script:';
+						PRINT N' 💡 In case you want to change MAXDOP to the recommeded value, please use this script:';
 						PRINT '';
 						PRINT 'EXEC sp_configure ''max degree of parallelism'',' + CAST(@RecommendedMaxDop AS CHAR);
 						PRINT 'GO';
@@ -584,7 +581,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'All DATABASES ARE AT RECOMMENDED COMPATIBILITY LEVEL';
+    PRINT N'✅ All DATABASES ARE AT RECOMMENDED COMPATIBILITY LEVEL';
 END
 ----------------------------------------------------------------------------------
 
@@ -609,14 +606,14 @@ WHERE
 db.state = 6 -- OFFLINE
 END
   ELSE 
-  BEGIN PRINT 'NO OFFLINE DATABASES PRESENT';
+  BEGIN PRINT N' ✅ NO OFFLINE DATABASES PRESENT';
         PRINT '----------------------------'
   END
 ----------------------------------------------------------------------------
 --CHECK FOR HALLENGREN DEPLOYED SCRIPTS -VERSION
 -- Multi-Database Ola Hallengren Feature Detection and Version Estimator
 
-PRINT 'Scanning all user databases for Ola Hallengren procedures...';
+PRINT N'⏳ Scanning all user databases for Ola Hallengren procedures...';
 SET NOCOUNT ON
 -- Temp tables
 IF OBJECT_ID('tempdb..##FeatureCheck') IS NOT NULL DROP TABLE ##FeatureCheck;
@@ -817,7 +814,7 @@ IF EXISTS (SELECT 1 FROM ##OldStats)
 BEGIN
     SET @OldStatsFound = 1;
 
-    PRINT 'OLD STATISTICS FOUND. Details below:';
+    PRINT N'⚠️ OLD STATISTICS FOUND. Details below:';
     SELECT 
 	SUBSTRING(DatabaseName,1,50) AS DatabaseName,
 	SUBSTRING(SchemaName,1,40) AS SchemaName,
@@ -864,10 +861,57 @@ DEALLOCATE db_cursor;
 END
 ELSE
 BEGIN
-    PRINT 'ALL STATISTICS ARE RECENT. No action needed.';
+    PRINT N'✅ ALL STATISTICS ARE RECENT. No action needed.';
 END
 --------------------------------------------------------------------------
-	  
+--GET REPLICATION ROLE
+------------------------------------------
+BEGIN TRY
+    DECLARE @isPublisher BIT = 0;
+    DECLARE @isDistributor BIT = 0;
+    DECLARE @isSubscriber BIT = 0;
+
+    DECLARE @pubStatus NVARCHAR(10) = 'No';
+    DECLARE @distStatus NVARCHAR(10) = 'No';
+    DECLARE @subStatus NVARCHAR(10) = 'No';
+
+    -- Check Publisher
+    IF EXISTS (SELECT 1 FROM sysobjects WHERE name = 'syspublications')
+    BEGIN
+        IF EXISTS (SELECT 1 FROM syspublications)
+            SET @isPublisher = 1;
+    END
+
+    -- Check Distributor
+    IF EXISTS (SELECT 1 FROM msdb.sys.objects WHERE name = 'MSdistributiondbs')
+    BEGIN
+        IF EXISTS (SELECT 1 FROM msdb.dbo.MSdistributiondbs)
+            SET @isDistributor = 1;
+    END
+
+    -- Check Subscriber
+    IF EXISTS (SELECT 1 FROM sysobjects WHERE name = 'syssubscriptions')
+    BEGIN
+        IF EXISTS (SELECT 1 FROM syssubscriptions)
+            SET @isSubscriber = 1;
+    END
+
+    -- Set status text
+    SET @pubStatus = CASE WHEN @isPublisher = 1 THEN 'Yes' ELSE 'No' END;
+    SET @distStatus = CASE WHEN @isDistributor = 1 THEN 'Yes' ELSE 'No' END;
+    SET @subStatus = CASE WHEN @isSubscriber = 1 THEN 'Yes' ELSE 'No' END;
+
+    PRINT N'📊 Replication Role Summary:';
+    PRINT  '----------------------------';
+    PRINT 'Publisher: ' + @pubStatus;
+    PRINT 'Distributor: ' + @distStatus;
+    PRINT 'Subscriber: ' + @subStatus;
+END TRY
+BEGIN CATCH
+    PRINT 'Error checking replication roles: ' + ERROR_MESSAGE();
+END CATCH;
+-------------------------------------------------------------------
+-----------------------------------------------------------	  
 --GET CLUSTER INFO
 IF SERVERPROPERTY('IsClustered') = 1
 BEGIN
@@ -981,6 +1025,45 @@ BEGIN
 END
 
 --------------------------------------------------
+-- CHECK RESOURCE GOVERNOR ENABLED 
+SELECT 
+    CASE 
+        WHEN (SELECT is_enabled FROM sys.resource_governor_configuration) = 1 THEN 'Enabled'
+        ELSE 'Disabled'
+    END AS ResourceGovernorStatus,
+    (SELECT COUNT(*) 
+     FROM sys.resource_governor_resource_pools 
+     WHERE name NOT IN ('internal', 'default')) AS UserDefinedPools,
+    (SELECT COUNT(*) 
+     FROM sys.resource_governor_workload_groups 
+     WHERE name NOT IN ('internal', 'default')) AS UserDefinedGroups;
+-------------------------------------------------------------------
+-- CHECK POLYBASE INSTALLED
+BEGIN
+    IF SERVERPROPERTY('IsPolyBaseInstalled') = 1
+    BEGIN
+        PRINT 'PolyBase is installed.';
+        PRINT 'PolyBase service details:';
+
+        -- Show PolyBase-related services and their status
+        SELECT 
+            servicename, 
+            startup_type_desc, 
+            status_desc, 
+            process_id, 
+            last_startup_time
+        FROM 
+            sys.dm_server_services
+        WHERE 
+            servicename LIKE '%PolyBase%';
+    END
+    ELSE
+    BEGIN
+        PRINT N'POLYBASE IS NOT INSTALLED.';
+    END
+END
+-----------------------------------------------------
+
 ---CHECK TEMPDB FILES ARE CORRECT
 USE tempdb;
 GO
@@ -1026,7 +1109,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'All TEMPDB DATAFILES ARE CONFIGURED CORRECTLY';
+    PRINT N'✅ All TEMPDB DATAFILES ARE CONFIGURED CORRECTLY';
 END
 
 ----CHECK CONFIGURED PBM POLICIES
@@ -1039,7 +1122,7 @@ IF EXISTS (
     WHERE is_enabled = 1
 )
 BEGIN
-    PRINT 'POLICY-BASED MANAGEMENT IS IN USE';
+    PRINT N'✅ POLICY-BASED MANAGEMENT IS IN USE';
 
     SELECT
         SUBSTRING([name], 1, 40) AS PBM_policy,
@@ -1069,7 +1152,7 @@ FETCH NEXT FROM db_cursor INTO @DBName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    PRINT 'Checking database: ' + QUOTENAME(@DBName);
+    PRINT N'⏳ Checking database: ' + QUOTENAME(@DBName);
 
     SET @SQL = '
     USE ' + QUOTENAME(@DBName) + ';
@@ -1126,7 +1209,7 @@ END
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
 PRINT '------------------------------------------'
---------------------------------------------------
+
 ---GET FILE INFO
 PRINT 'FILE INFORMATION' 
 PRINT '----------------'
@@ -1144,7 +1227,6 @@ WHERE
     D.name NOT IN ('model', 'msdb', 'master', 'tempdb')
 ORDER BY
     D.name;
-
 
 ------GET DEFAULT BACKUP LOCATION
 
@@ -1357,7 +1439,7 @@ IF EXISTS (
     WHERE type = 'U' AND is_ms_shipped = 0
 )
 BEGIN
-    PRINT 'USER TABLES FOUND IN MASTER';
+    PRINT N'⚠️ USER TABLES FOUND IN MASTER';
     SELECT 
         SUBSTRING(name, 1, 50) AS Tables_in_MASTER, 
         SUBSTRING(type_desc, 1, 20) AS type_desc, 
@@ -1368,7 +1450,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO USER TABLES FOUND IN MASTER';
+    PRINT N'✅ NO USER TABLES FOUND IN MASTER';
 END
 GO
 	PRINT '-------------------------------'
@@ -1382,7 +1464,7 @@ IF EXISTS (
     WHERE type = 'U' AND is_ms_shipped = 0
 )
 BEGIN
-    PRINT 'USER TABLES FOUND IN MSDB';
+    PRINT N'⚠️ USER TABLES FOUND IN MSDB';
     SELECT 
         SUBSTRING(name, 1, 50) AS Tables_in_MSDB, 
         SUBSTRING(type_desc, 1, 20) AS type_desc, 
@@ -1393,10 +1475,10 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO USER TABLES FOUND IN MSDB';
+    PRINT N' ✅ NO USER TABLES FOUND IN MSDB';
 END
 GO
-	PRINT '----------------------------'
+	PRINT '----------------------------------'
 
 	--------------------------------------------------
 	--Databases that are accessing system tables
@@ -1525,7 +1607,7 @@ BEGIN
     PRINT 'Current Fill Factor: ' + @fillfactor;
 END
 ELSE
-    PRINT 'FILLFACTOR is '+ @fillfactor;
+    PRINT ' FILLFACTOR is '+ @fillfactor;
 
 -- Check MAXDOP
 DECLARE @cpu_count INT = (SELECT cpu_count FROM sys.dm_os_sys_info);
@@ -1533,22 +1615,22 @@ DECLARE @recommended_maxdop_half INT = @cpu_count / 2;
 
 IF @maxdop NOT IN (0, @recommended_maxdop_half, @cpu_count)
 BEGIN
-    PRINT 'MAXDOP MAY NOT BE SET CORRECTLY';
+    PRINT N'⚠️ MAXDOP MAY NOT BE SET CORRECTLY';
     PRINT 'Current MAXDOP: ' + CAST(@maxdop AS VARCHAR);
     PRINT 'CPU Count: ' + CAST(@cpu_count AS VARCHAR);
  --   PRINT 'Recommended MAXDOP (Half): ' + CAST(@recommended_maxdop_half AS VARCHAR);
     IF @cpu_count = 4
-        PRINT 'RECOMMENDED: Set MAXDOP to 4 for 4-core systems.';
+        PRINT N'💡 RECOMMENDED: Set MAXDOP to 4 for 4-core systems.';
 END
 ELSE
 BEGIN
-    PRINT 'MAXDOP IS CORRECTLY SET.';
+    PRINT N'✅ MAXDOP IS CORRECTLY SET.';
 END
 	PRINT '------------------------'
 -- Check cost threshold
 IF @costthreshhold <> '50'
 BEGIN
-    PRINT 'COST THRESHOLD FOR PARALLELISM IS NOT SET TO VALUE(50)';
+    PRINT N'⚠️ COST THRESHOLD FOR PARALLELISM IS NOT SET TO VALUE(50)';
     PRINT 'CURRENT COST THRESHOLD: ' + @costthreshhold;
 END
 ELSE
@@ -1557,21 +1639,22 @@ ELSE
 -- Check DAC
 IF @DAC <> '1'
 BEGIN
-    PRINT 'REMOTE ADMIN CONNECTION NOT ENABLED (DAC)';
+    PRINT N'❌ REMOTE ADMIN CONNECTION NOT ENABLED (DAC)';
     PRINT 'CURRENT DAC SETTING: ' + @DAC;
 END
 ELSE
-    PRINT 'REMOTE DAC ENABLED';
+    PRINT N'✅ REMOTE DAC ENABLED';
 
 -- Check advanced options
 IF @advanced <> '1'
 BEGIN
-    PRINT 'SHOW ADVANCED OPTIONS NOT ENABLED (1)';
+    PRINT N'❌ REMOTE ADMIN CONNECTION NOT ENABLED (DAC)';
+    PRINT N'❌ SHOW ADVANCED OPTIONS NOT ENABLED (1)';
     PRINT 'CURRENT ADVANCED OPTIONS SETTING: ' + @advanced;
 END
 ELSE
-    PRINT 'ADVANCED OPTIONS ENABLED';
-
+    PRINT N'✅ ADVANCED OPTIONS ENABLED';
+----------------------------------------------------------
 SET NOCOUNT ON;
 SET XACT_ABORT OFF;
 
@@ -1670,7 +1753,7 @@ FETCH NEXT FROM db_cursor INTO @DBName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    PRINT 'CHECKING QUERY STORE SETTINGS FOR DATABASE: ' + QUOTENAME(@DBName);
+    PRINT N'🔍 CHECKING QUERY STORE SETTINGS FOR DATABASE: ' + QUOTENAME(@DBName);
 
     BEGIN TRY
         SET @SQL2 = '
@@ -1774,11 +1857,11 @@ WHERE state_desc = 'ONLINE'
 
 IF EXISTS (SELECT 1 FROM @Results)
 BEGIN
-    PRINT 'DATABASES FOUND WITH WRONG OWNER';
+    PRINT N'⚠️ DATABASES FOUND WITH WRONG OWNER';
     SELECT * FROM @Results;
 END
   -----------------------------------------------------------------
-PRINT 'Looking for login fails in the last 24 hours....'
+PRINT N'🔍 Looking for login fails in the last 24 hours....'
 IF EXISTS (
     SELECT 1
     FROM sys.fn_trace_gettable(
@@ -1809,7 +1892,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO FAILED LOGINS LAST 24 HOURS';
+    PRINT N'✅ NO FAILED LOGINS LAST 24 HOURS';
 END
 -----------------------------------------------
 PRINT 'CURRENT ERRORLOG [ERRORS]'
@@ -1865,5 +1948,5 @@ PRINT '--------------------------'
 	    ORDER BY database_name ,backup_start_date DESC
 --------------------------------------------------------------------------------------------
 
-PRINT 'REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
+PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
