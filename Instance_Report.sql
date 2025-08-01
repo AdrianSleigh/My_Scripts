@@ -160,37 +160,54 @@ SELECT
 ---CHECK MEMORY SETTINGS
 ------------------------------------
 -- Declare variables
-DECLARE @TotalMemoryMB INT, @AvailableMemoryMB INT, @AvailablePercent DECIMAL(5,2), @SuggestedMaxMemoryMB INT;
+DECLARE @TotalMemoryMB INT, @AvailableMemoryMB INT;
+DECLARE @AvailablePercent DECIMAL(5,2);
+DECLARE @CurrentMaxMemoryMB INT, @SuggestedMaxMemoryMB INT;
+DECLARE @WorkloadRole VARCHAR(20) = 'Mixed'; -- Options: 'SSIS', 'SQL', 'Mixed'
 
--- Get memory values
+-- Get total and available memory
 SELECT 
     @TotalMemoryMB = total_physical_memory_kb / 1024,
     @AvailableMemoryMB = available_physical_memory_kb / 1024
 FROM sys.dm_os_sys_memory;
 
--- Calculate available memory percentage
-SET @AvailablePercent = (CAST(@AvailableMemoryMB AS DECIMAL(10,2)) / @TotalMemoryMB) * 100;
+-- Get current SQL Server max memory setting (with explicit conversion)
+SELECT @CurrentMaxMemoryMB = CONVERT(INT, value_in_use)
+FROM sys.configurations
+WHERE name = 'max server memory (MB)';
 
--- Suggest max server memory (leave 8 GB for OS and other processes)
-SET @SuggestedMaxMemoryMB = @TotalMemoryMB - 8192;
+-- Calculate available memory percentage
+SET @AvailablePercent = 
+    (CAST(@AvailableMemoryMB AS DECIMAL(10,2)) / CAST(@TotalMemoryMB AS DECIMAL(10,2))) * 100;
+
+-- Determine suggested max memory based on workload
+IF @WorkloadRole = 'SSIS'
+    SET @SuggestedMaxMemoryMB = @TotalMemoryMB - 8192; -- Leave 8 GB for OS + SQL
+ELSE IF @WorkloadRole = 'SQL'
+    SET @SuggestedMaxMemoryMB = @TotalMemoryMB - 4096; -- Leave 4 GB for OS
+ELSE -- Mixed workload
+    SET @SuggestedMaxMemoryMB = @TotalMemoryMB - 16384; -- Leave 16 GB for SSIS + OS
 
 -- Output memory status
-PRINT '-- Memory Health Check ---';
+PRINT '--- Memory Health Check ---';
 PRINT 'Total Physical Memory (MB): ' + CAST(@TotalMemoryMB AS VARCHAR);
-PRINT 'Current Available Physical Memory (MB): ' + CAST(@AvailableMemoryMB AS VARCHAR);
+PRINT 'Available Physical Memory (MB): ' + CAST(@AvailableMemoryMB AS VARCHAR);
 PRINT 'Available Memory Percentage: ' + CAST(@AvailablePercent AS VARCHAR) + '%';
+PRINT 'Current SQL Server Max Memory (MB): ' + CAST(@CurrentMaxMemoryMB AS VARCHAR);
+PRINT 'Suggested Max Server Memory (MB): ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR);
 
--- Output warning and recommendation
-IF @AvailablePercent < 10
+-- Recommendation
+IF @CurrentMaxMemoryMB > @SuggestedMaxMemoryMB
 BEGIN
-    PRINT N'⚠️ WARNING: AVAILABLE MEMORY BELOW 10%. SQL Server or other processes may be consuming too much memory.';
-    PRINT N'💡 SUGGESTED Max Server Memory setting for SQL Server: ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB';
+    PRINT N'⚠️ SQL Server is using more memory than recommended for this workload.';
+    PRINT N'💡 Consider reducing max server memory to ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB.';
 END
 ELSE
 BEGIN
-    PRINT N'✅ Memory availability is within a healthy range.';
-    PRINT 'You may still consider setting max server memory to around ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB to ensure OS stability.';
+    PRINT N'✅ SQL Server memory configuration appears appropriate for this workload.';
 END
+
+
 
  ------------------------------------------------------------------------
 --GET SERVICE ACCOUNT INFO V6.0 10/03/21
@@ -1490,7 +1507,35 @@ BEGIN
     PRINT 'NO SSIS PACKAGES IN MSDB';
 END
 GO
+-----------------------------------------------
+--GET SSIS SCALE OUT
+---------------------------------------------------
+BEGIN TRY
+    USE SSISDB;
 
+    IF EXISTS (
+        SELECT 1
+        FROM SSISDB.catalog.catalog_properties
+        WHERE property_name = 'ScaleOutMasterEnabled'
+    )
+    BEGIN
+        DECLARE @enabled BIT;
+        SELECT @enabled = property_value
+        FROM SSISDB.catalog.catalog_properties
+        WHERE property_name = 'ScaleOutMasterEnabled';
+
+        IF @enabled = 1
+            PRINT 'SSIS SCALE OUT DEPLOYED';
+        ELSE
+            PRINT 'No Scale Out';
+    END
+    ELSE
+        PRINT 'NO SSIS SCALE OUT CONFIGURED';
+END TRY
+BEGIN CATCH
+    PRINT 'SSISDB not found or Scale Out not configured';
+END CATCH;
+----------------------------------------------------------
 PRINT '----------------------'
 
 -- Check for user tables in MASTER
