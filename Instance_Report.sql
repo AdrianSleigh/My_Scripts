@@ -248,6 +248,70 @@ END
 -- Clean up
 DROP TABLE #proxytable;
 -----------------------------------------
+---GET DISABLED LOGINS
+------------------------------------------------
+-- CHECK DISABLED LOGINS and show details including last login (if trace data is available)
+SET NOCOUNT ON
+IF EXISTS (
+    SELECT 1 
+    FROM sys.server_principals 
+    WHERE is_disabled = 1 AND type_desc IN ('SQL_LOGIN', 'WINDOWS_LOGIN', 'WINDOWS_GROUP')
+)
+BEGIN
+    PRINT N'⚠️ DISABLED LOGINS FOUND';
+
+    -- Temp table to hold last login info
+    IF OBJECT_ID('tempdb..#LastLogins') IS NOT NULL DROP TABLE #LastLogins;
+    CREATE TABLE #LastLogins (
+        LoginName NVARCHAR(256),
+        LastLoginTime DATETIME
+    );
+
+    -- Try to extract last login info from default trace
+    DECLARE @TraceFile NVARCHAR(500);
+    SELECT TOP 1 @TraceFile = path FROM sys.traces WHERE is_default = 1;
+
+    IF @TraceFile IS NOT NULL
+    BEGIN
+        INSERT INTO #LastLogins (LoginName, LastLoginTime)
+        SELECT 
+            -- Extract login name from TextData using CHARINDEX
+            SUBSTRING(TextData, CHARINDEX('Login succeeded for user ''', TextData) + 25, 
+                      CHARINDEX('''', TextData, CHARINDEX('Login succeeded for user ''', TextData) + 25) - 
+                      CHARINDEX('Login succeeded for user ''', TextData) - 25) AS LoginName,
+            MAX(StartTime) AS LastLoginTime
+        FROM 
+            fn_trace_gettable(@TraceFile, DEFAULT)
+        WHERE 
+            EventClass = 14 -- Audit Login
+            AND TextData LIKE 'Login succeeded for user%'
+        GROUP BY 
+            SUBSTRING(TextData, CHARINDEX('Login succeeded for user ''', TextData) + 25, 
+                      CHARINDEX('''', TextData, CHARINDEX('Login succeeded for user ''', TextData) + 25) - 
+                      CHARINDEX('Login succeeded for user ''', TextData) - 25);
+    END
+
+    -- Final output
+    SELECT 
+        SUBSTRING(sp.name,1,40) AS Login,
+        SUBSTRING(sp.type_desc,1,40) AS PrincipalType,
+        sp.create_date AS CreatedOn,
+        ll.LastLoginTime
+    FROM 
+        sys.server_principals sp
+    LEFT JOIN 
+        #LastLogins ll ON sp.name = ll.LoginName
+    WHERE 
+        sp.is_disabled = 1 
+        AND sp.type_desc IN ('SQL_LOGIN', 'WINDOWS_LOGIN', 'WINDOWS_GROUP');
+END
+ELSE
+BEGIN
+    PRINT N'✅ No disabled logins found.';
+END
+----------------------------------------------------------------------
+-----------------------------------------------------
+
 ---GET EXTENDED EVENT LIST
 ----------------------------------
 SELECT SUBSTRING(name,1,60) AS ExtendedEventName, 
