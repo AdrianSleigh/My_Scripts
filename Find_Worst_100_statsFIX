@@ -1,0 +1,183 @@
+--FIND WORST 100 stats and updates them
+--13/08/25
+-----------------------------------------------
+SET NOCOUNT ON;
+SET XACT_ABORT OFF; -- continue on errors
+
+DECLARE @MaxToUpdate INT = 100; -- change as needed
+
+/*==========================================================
+  1) Create / reset local temp table (session-scoped)
+==========================================================*/
+IF OBJECT_ID('tempdb..#StatsDashboard') IS NOT NULL
+    DROP TABLE #StatsDashboard;
+
+CREATE TABLE #StatsDashboard (
+    DatabaseName         SYSNAME,
+    SchemaName           SYSNAME,   -- important for schema-qualified updates
+    TableName            SYSNAME,
+    StatisticName        SYSNAME,
+    Rows                 BIGINT,
+    ModificationCounter  BIGINT,
+    LastUpdated          DATETIME,
+    ThresholdExceeded    BIT,
+    ExceedanceAmount     BIGINT
+);
+
+-- (Optional) quick sanity check of schema
+-- SELECT TOP (0) * FROM #StatsDashboard;
+
+/*==========================================================
+  2) Collect stats across ONLINE, READ_WRITE, non-snapshot DBs
+==========================================================*/
+DECLARE @DatabaseName SYSNAME;
+DECLARE @SQL           NVARCHAR(MAX);
+
+DECLARE db_cursor CURSOR FAST_FORWARD FOR
+SELECT 
+ SUBSTRING(name,1,50)
+FROM sys.databases
+WHERE state_desc = 'ONLINE'
+  AND is_read_only = 0
+  AND source_database_id IS NULL          -- exclude database snapshots
+  AND name NOT IN ('master', 'tempdb', 'model', 'msdb'); -- exclude system
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @DatabaseName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Per-DB collection with schema, user objects only, and 'older than 1 day' OR never updated
+    SET @SQL = N'
+    USE ' + QUOTENAME(@DatabaseName) + N';
+
+    BEGIN TRY
+        INSERT INTO #StatsDashboard (DatabaseName, SchemaName, TableName, StatisticName, Rows, ModificationCounter, LastUpdated, ThresholdExceeded, ExceedanceAmount)
+        SELECT 
+            DB_NAME()                                        AS DatabaseName,
+            OBJECT_SCHEMA_NAME(s.object_id)                  AS SchemaName,
+            OBJECT_NAME(s.object_id)                         AS TableName,
+            s.name                                           AS StatisticName,
+            p.rows,
+            p.modification_counter,
+            STATS_DATE(s.object_id, s.stats_id)              AS LastUpdated,
+            CASE 
+                WHEN p.modification_counter > (p.rows * 0.2 + 500) THEN 1 
+                ELSE 0 
+            END                                              AS ThresholdExceeded,
+            CASE 
+                WHEN p.modification_counter > (p.rows * 0.2 + 500) 
+                    THEN p.modification_counter - (p.rows * 0.2 + 500)
+                ELSE 0 
+            END                                              AS ExceedanceAmount
+        FROM sys.stats AS s
+        INNER JOIN sys.objects AS o
+            ON o.object_id = s.object_id
+        CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) AS p
+        WHERE 
+            o.is_ms_shipped = 0
+            AND o.type IN (''U'', ''V'')                     -- user tables and (indexed) views
+            AND OBJECT_SCHEMA_NAME(s.object_id) IS NOT NULL
+            AND OBJECT_NAME(s.object_id) IS NOT NULL
+            AND p.rows IS NOT NULL
+            AND (
+                  STATS_DATE(s.object_id, s.stats_id) IS NULL
+               OR STATS_DATE(s.object_id, s.stats_id) < DATEADD(DAY, -1, GETDATE())
+            );
+
+    END TRY
+    BEGIN CATCH
+        PRINT ''[WARN] Collect failed for DB [' + REPLACE(DB_NAME(), '''', '''''') + '] - Error: '' 
+              + CONVERT(varchar(12), ERROR_NUMBER()) + '' - '' + ERROR_MESSAGE();
+        -- continue
+    END CATCH;
+    ';
+
+    BEGIN TRY
+        EXEC sp_executesql @SQL;
+    END TRY
+    BEGIN CATCH
+        PRINT '[WARN] Dynamic collection failed for [' + @DatabaseName + '] - Error: '
+              + CONVERT(varchar(12), ERROR_NUMBER()) + ' - ' + ERROR_MESSAGE();
+    END CATCH;
+
+    FETCH NEXT FROM db_cursor INTO @DatabaseName;
+END
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+/*==========================================================
+  3) Optional summary before updates
+==========================================================*/
+PRINT '--- Summary of candidates by database ---';
+SELECT SUBSTRING(DatabaseName,1,50)AS DatabaseName,
+       COUNT(*) AS CandidateCount,
+       SUM(CASE WHEN ThresholdExceeded = 1 THEN 1 ELSE 0 END) AS OverThreshold
+FROM #StatsDashboard
+GROUP BY DatabaseName
+ORDER BY DatabaseName;
+
+/*==========================================================
+  4) Update top N most overdue statistics (schema-qualified)
+==========================================================*/
+DECLARE @SchemaName     SYSNAME;
+DECLARE @TableName      SYSNAME;
+DECLARE @StatisticName  SYSNAME;
+
+DECLARE stats_cursor CURSOR FAST_FORWARD FOR
+SELECT TOP (@MaxToUpdate) DatabaseName, SchemaName, TableName, StatisticName
+FROM #StatsDashboard
+WHERE ThresholdExceeded = 1
+ORDER BY ExceedanceAmount DESC;
+
+OPEN stats_cursor;
+FETCH NEXT FROM stats_cursor INTO @DatabaseName, @SchemaName, @TableName, @StatisticName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    PRINT 'Updating statistic [' + @StatisticName + '] on [' + @SchemaName + '].[' + @TableName + '] in [' + @DatabaseName + ']';
+
+    -- Use database context + two-part object name for UPDATE STATISTICS
+    SET @SQL = N'
+    USE ' + QUOTENAME(@DatabaseName) + N';
+    BEGIN TRY
+        -- Skip if DB turned read-only or object disappeared
+        IF DATABASEPROPERTYEX(DB_NAME(), ''Updateability'') = ''READ_WRITE''
+           AND OBJECT_ID(N''' + REPLACE(QUOTENAME(@SchemaName) + N'.' + QUOTENAME(@TableName), '''', '''''') + N''') IS NOT NULL
+        BEGIN
+            UPDATE STATISTICS ' + QUOTENAME(@SchemaName) + N'.' + QUOTENAME(@TableName) + N' ' + QUOTENAME(@StatisticName) + N';
+        END
+        ELSE
+        BEGIN
+            PRINT N''[SKIP] Not writable or object missing: [' + REPLACE(@SchemaName, '''', '''''') + '].[' + REPLACE(@TableName, '''', '''''') + ']'';
+        END
+    END TRY
+    BEGIN CATCH
+        PRINT N''[WARN] Update failed for [' + REPLACE(@SchemaName, '''', '''''') + '].[' + REPLACE(@TableName, '''', '''''') + '] (' + REPLACE(@StatisticName, '''', '''''') + ') - Error: '' 
+              + CONVERT(varchar(12), ERROR_NUMBER()) + N'' - '' + ERROR_MESSAGE();
+        -- continue
+    END CATCH;';
+
+    BEGIN TRY
+        EXEC sp_executesql @SQL;
+    END TRY
+    BEGIN CATCH
+        PRINT '[WARN] Dynamic update failed in [' + @DatabaseName + '] for '
+              + QUOTENAME(@SchemaName) + '.' + QUOTENAME(@TableName) + ' (' + QUOTENAME(@StatisticName) + ') - Error: '
+              + CONVERT(varchar(12), ERROR_NUMBER()) + ' - ' + ERROR_MESSAGE();
+    END CATCH;
+
+    FETCH NEXT FROM stats_cursor INTO @DatabaseName, @SchemaName, @TableName, @StatisticName;
+END
+
+CLOSE stats_cursor;
+DEALLOCATE stats_cursor;
+
+PRINT N'✅ Update complete for top ' + CAST(@MaxToUpdate AS varchar(12)) + ' overdue statistics.';
+
+-- Optional: show what remains most overdue
+SELECT TOP 50 *
+FROM #StatsDashboard
+WHERE ThresholdExceeded = 1
+ORDER BY ExceedanceAmount DESC, DatabaseName, SchemaName, TableName, StatisticName;
