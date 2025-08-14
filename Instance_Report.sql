@@ -2365,9 +2365,9 @@ EXEC xp_readerrorlog;
 SELECT   LogDate,ProcessInfo,LogText
     FROM #ReadErrorLog
     WHERE           
-              --LogDate >= getdate()-7
-    -- AND   
-              LogText LIKE '%error%' 
+            LogDate >= getdate()-7
+    AND   
+            LogText LIKE '%error%' 
 
 -- Clean up
 DROP TABLE #ReadErrorLog
@@ -2398,4 +2398,5 @@ PRINT '--------------------------'
 
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
+
 
