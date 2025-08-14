@@ -1262,15 +1262,33 @@ GO
 
 --------------------------------------------------
 --GET ENCRYPTION KEY DATES
----Ebcryption Keys and Cerftificates
+SET NOCOUNT ON
 DECLARE @DBName NVARCHAR(128);
 DECLARE @SQL NVARCHAR(MAX);
 
-DECLARE db_cursor CURSOR FOR
-SELECT name 
-FROM sys.databases 
-WHERE state_desc = 'ONLINE' AND name NOT IN ('tempdb');
+-- Step 1: Create temp table with AG role info
+IF OBJECT_ID('tempdb..#db_roles') IS NOT NULL DROP TABLE #db_roles;
 
+SELECT 
+    d.name AS DatabaseName,
+    CASE 
+        WHEN drs.is_primary_replica = 1 THEN 1
+        WHEN drs.is_primary_replica = 0 THEN 0
+        ELSE -1 -- Not in AG
+    END AS is_primary_replica
+INTO #db_roles
+FROM sys.databases d
+LEFT JOIN sys.dm_hadr_database_replica_states drs 
+    ON d.database_id = drs.database_id
+WHERE d.state_desc = 'ONLINE'
+  AND d.name NOT IN ('master', 'model', 'msdb', 'tempdb', 'SSISDB'); -- exclude system DBs
+
+-- Step 2: Cursor to loop through only primary or non-AG databases
+DECLARE db_cursor CURSOR FOR
+SELECT DatabaseName
+FROM #db_roles
+WHERE is_primary_replica IN (1, -1); -- primary or not in AG
+PRINT 'CHECKING FOR ENCRYPTION KEYS'
 OPEN db_cursor;
 FETCH NEXT FROM db_cursor INTO @DBName;
 
@@ -1325,14 +1343,21 @@ BEGIN
     END
     ';
 
-    EXEC sp_executesql @SQL;
+    BEGIN TRY
+        EXEC sp_executesql @SQL;
+    END TRY
+    BEGIN CATCH
+        PRINT 'Error accessing database [' + @DBName + ']: ' + ERROR_MESSAGE();
+    END CATCH;
 
     FETCH NEXT FROM db_cursor INTO @DBName;
 END
 
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
-PRINT '------------------------------------------'
+
+-- Cleanup
+DROP TABLE #db_roles;
 
 ---GET FILE INFO
 PRINT 'FILE INFORMATION' 
@@ -1554,22 +1579,33 @@ GO
 -----------------------------------------------
 --GET SSIS SCALE OUT
 ---------------------------------------------------
+-- Check if SSISDB exists
 IF EXISTS (
-    SELECT * 
+    SELECT 1
     FROM master.dbo.sysdatabases
     WHERE name = 'SSISDB'
 )
 BEGIN
-    PRINT N'⚠️ SSISDB FOUND...';
+    PRINT N'⚠️ SSISDB FOUND';
 
-    BEGIN TRY
-        IF EXISTS (
-            SELECT 1
-            FROM SSISDB.catalog.catalog_properties
-            WHERE property_name = 'ScaleOutMasterEnabled'
-        )
-        BEGIN
+    DECLARE @IsPrimaryReplica BIT = 0;
+
+    -- Check if current replica is primary for SSISDB
+    IF EXISTS (
+        SELECT 1
+        FROM sys.dm_hadr_database_replica_states AS drs
+        JOIN sys.databases AS db ON drs.database_id = db.database_id
+        WHERE db.name = 'SSISDB' AND drs.is_primary_replica = 1
+    )
+    SET @IsPrimaryReplica = 1;
+
+    IF @IsPrimaryReplica = 1
+    BEGIN
+        PRINT 'SSISDB is on the primary replica';
+
+        BEGIN TRY
             DECLARE @enabled BIT;
+
             SELECT @enabled = property_value
             FROM SSISDB.catalog.catalog_properties
             WHERE property_name = 'ScaleOutMasterEnabled';
@@ -1577,21 +1613,23 @@ BEGIN
             IF @enabled = 1
                 PRINT 'SSIS SCALE OUT DEPLOYED';
             ELSE
-                PRINT 'NO SSIS SCALE OUT';
-        END
-        ELSE
-            PRINT 'NO SSIS SCALE OUT CONFIGURED';
-    END TRY
-    BEGIN CATCH
-        PRINT 'Error accessing SSISDB catalog properties';
-    END CATCH;
+                PRINT 'NO SSIS SCALE OUT DEPLOYED';
+        END TRY
+        BEGIN CATCH
+            PRINT '⚠️ Error accessing SSISDB catalog properties';
+        END CATCH;
+    END
+    ELSE
+    BEGIN
+        PRINT 'SSISDB is on a secondary replica — skipping query to avoid error';
+    END
 END
 ELSE
 BEGIN
-    PRINT '';
+    PRINT 'SSISDB not found';
 END
 
-PRINT '----------------------'
+PRINT '---------------------------';
 
 -- Check for user tables in MASTER
 USE master;
@@ -1639,13 +1677,13 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N' ✅ NO USER TABLES FOUND IN MSDB';
+    PRINT N'✅ NO USER TABLES FOUND IN MSDB';
 END
 GO
-              PRINT '----------------------------------'
+   PRINT '----------------------------------'
 
-              --------------------------------------------------
-              --Databases that are accessing system tables
+ --------------------------------------------
+ --Databases that are accessing system tables
 --------------------------------------------
 SET NOCOUNT ON;
 
@@ -1667,7 +1705,20 @@ DECLARE @sql NVARCHAR(MAX);
 
 -- Loop through user databases
 DECLARE dbs CURSOR LOCAL FAST_FORWARD FOR
-SELECT name FROM sys.databases WHERE database_id > 4 AND state_desc = 'ONLINE';
+
+SELECT d.name
+FROM sys.databases d
+LEFT JOIN sys.dm_hadr_database_replica_states drs
+    ON d.database_id = drs.database_id
+LEFT JOIN sys.dm_hadr_availability_replica_states ars
+    ON drs.replica_id = ars.replica_id
+LEFT JOIN sys.availability_replicas ar
+    ON ars.replica_id = ar.replica_id
+WHERE d.database_id > 4
+  AND d.state_desc = 'ONLINE'
+  AND d.is_read_only = 0
+  AND (ars.role = 1 OR ars.role IS NULL); -- 1 = PRIMARY
+
 
 OPEN dbs;
 FETCH NEXT FROM dbs INTO @dbName2;
@@ -2000,38 +2051,93 @@ IF EXISTS (
   ----------------------------------------------------------------
   --QUERYSTORE
 --------------------------------------------------------------------
-DECLARE @DBName NVARCHAR(128);
-DECLARE @SQL2 NVARCHAR(MAX);
+SET NOCOUNT ON;
 
-DECLARE db_cursor CURSOR FOR
-SELECT name 
-FROM sys.databases 
-WHERE state_desc = 'ONLINE' AND database_id > 4; -- Exclude system databases
+-- Create a permanent results table in tempdb
+USE tempdb;
+IF OBJECT_ID('dbo.SystemTableScanResults') IS NOT NULL DROP TABLE dbo.SystemTableScanResults;
+CREATE TABLE dbo.SystemTableScanResults (
+    DatabaseName SYSNAME,
+    SystemTable SYSNAME,
+    RecommendedView SYSNAME,
+    ReferencingObject SYSNAME,
+    ObjectType NVARCHAR(60),
+    SchemaName SYSNAME,
+    CodeSnippet NVARCHAR(MAX)
+);
+
+DECLARE @DBName SYSNAME;
+DECLARE @SQL6 NVARCHAR(MAX);
+
+-- Cursor to loop through user databases that are ONLINE, writable, and PRIMARY in AG (or not in AG)
+DECLARE db_cursor CURSOR LOCAL FAST_FORWARD FOR
+SELECT d.name
+FROM sys.databases d
+LEFT JOIN sys.dm_hadr_database_replica_states drs
+    ON d.database_id = drs.database_id
+LEFT JOIN sys.dm_hadr_availability_replica_states ars
+    ON drs.replica_id = ars.replica_id
+WHERE d.database_id > 4
+  AND d.state_desc = 'ONLINE'
+  AND d.is_read_only = 0
+  AND (ars.role = 1 OR ars.role IS NULL); -- 1 = PRIMARY, NULL = not in AG
 
 OPEN db_cursor;
 FETCH NEXT FROM db_cursor INTO @DBName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    PRINT N'🔍 CHECKING QUERY STORE SETTINGS FOR DATABASE: ' + QUOTENAME(@DBName);
+    PRINT N'🔍 CHECKING DATABASE: ' + QUOTENAME(@DBName);
 
     BEGIN TRY
-        SET @SQL2 = '
+        -- Check for system table usage
+        SET @SQL6 = '
+        USE ' + QUOTENAME(@DBName) + ';
+        SET NOCOUNT ON;
+
+        WITH SystemTableMap AS (
+            SELECT * FROM (VALUES
+                (''sysobjects'', ''sys.objects''),
+                (''sysindexes'', ''sys.indexes''),
+                (''syscolumns'', ''sys.columns''),
+                (''sysusers'', ''sys.database_principals''),
+                (''syscomments'', ''sys.sql_modules''),
+                (''sysdepends'', ''sys.sql_expression_dependencies'')
+            ) AS tbl(SystemTable, RecommendedView)
+        )
+        INSERT INTO tempdb.dbo.SystemTableScanResults
+        SELECT
+            DB_NAME(),
+            stm.SystemTable,
+            stm.RecommendedView,
+            OBJECT_NAME(m.object_id),
+            o.type_desc,
+            OBJECT_SCHEMA_NAME(m.object_id),
+            LEFT(m.definition, 500)
+        FROM sys.sql_modules m
+        JOIN sys.objects o ON m.object_id = o.object_id
+        CROSS JOIN SystemTableMap stm
+        WHERE m.definition LIKE ''%'' + stm.SystemTable + ''%'';';
+        
+        EXEC (@SQL6);
+
+        -- Check Query Store settings
+        SET @SQL6 = '
         USE ' + QUOTENAME(@DBName) + ';
         SELECT 
-            SUBSTRING(actual_state_desc,1,10) AS Actual_state_desc,
-            SUBSTRING(desired_state_desc,1,10)AS DesiredState,
-            SUBSTRING(query_capture_mode_desc,1,10)AS QueryCaptureMode,
-            SUBSTRING(size_based_cleanup_mode_desc,1,10)AS SizeBasedCleanupMode,
+            DB_NAME() AS DatabaseName,
+            SUBSTRING(actual_state_desc,1,10) AS ActualState,
+            SUBSTRING(desired_state_desc,1,10) AS DesiredState,
+            SUBSTRING(query_capture_mode_desc,1,10) AS QueryCaptureMode,
+            SUBSTRING(size_based_cleanup_mode_desc,1,10) AS CleanupMode,
             max_storage_size_mb,
             stale_query_threshold_days
-          FROM sys.database_query_store_options;
-        ';
-
-        EXEC sp_executesql @SQL2;
+        FROM sys.database_query_store_options;';
+        
+        EXEC (@SQL6);
     END TRY
     BEGIN CATCH
-        PRINT 'QUERY STORE NOT SUPPORTED OR ACCESSIBLE IN DATABASE: ' + QUOTENAME(@DBName);
+        PRINT N'⚠️ Error accessing database: ' + QUOTENAME(@DBName);
         PRINT ERROR_MESSAGE();
     END CATCH;
 
@@ -2040,61 +2146,101 @@ END
 
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
+------------------------------------------------------------------------
+-- Output results
+PRINT N'📋 DATABASES THAT ARE ACCESSING SYSTEM TABLES';
+SELECT
+    SUBSTRING(DatabaseName,1,60) AS DatabaseName,
+    SUBSTRING(SystemTable,1,20) AS SystemTable,
+    SUBSTRING(RecommendedView,1,20) AS USE_Substitute,
+    SUBSTRING(ReferencingObject,1,30) AS ReferencingObject,
+    SUBSTRING(ObjectType,1,30) AS ObjectType,
+    SUBSTRING(SchemaName,1,20) AS SchemaName
+FROM tempdb.dbo.SystemTableScanResults;
+
+-- Optional: clean up
+DROP TABLE tempdb.dbo.SystemTableScanResults;
+
   ----------------------------------------------------------------
-  ---FIND ORPHANED USERS
-DECLARE @DatabaseName NVARCHAR(128);
-DECLARE @SQL3 NVARCHAR(MAX);
+ --Get Orphaned Users 14/08/25
+--------------------------------
+-- Step 1: Create temp table for results
+SET NOCOUNT ON
+IF OBJECT_ID('tempdb..#orphaned_users') IS NOT NULL DROP TABLE #orphaned_users;
+
+CREATE TABLE #orphaned_users (
+    DatabaseName SYSNAME,
+    OrphanedUser SYSNAME,
+    UserType NVARCHAR(60)
+);
+
+-- Step 2: Create temp table with AG role info
+IF OBJECT_ID('tempdb..#db_roles') IS NOT NULL DROP TABLE #db_roles;
+
+SELECT 
+    d.name AS DatabaseName,
+    CASE 
+        WHEN drs.is_primary_replica = 1 THEN 1
+        WHEN drs.is_primary_replica = 0 THEN 0
+        ELSE -1 -- Not in AG
+    END AS is_primary_replica
+INTO #db_roles
+FROM sys.databases d
+LEFT JOIN sys.dm_hadr_database_replica_states drs 
+    ON d.database_id = drs.database_id
+WHERE d.state_desc = 'ONLINE'
+  AND d.name NOT IN ('master', 'model', 'msdb', 'tempdb', 'SSISDB'); -- exclude system DBs
+
+-- Step 3: Cursor to loop through only primary or non-AG user databases
+DECLARE @dbName6 NVARCHAR(128);
+DECLARE @stmt NVARCHAR(MAX);
 
 DECLARE db_cursor CURSOR FOR
-SELECT name 
-FROM sys.databases 
-WHERE state_desc = 'ONLINE' 
-  AND name NOT IN ('master', 'tempdb', 'model', 'msdb');
+SELECT DatabaseName
+FROM #db_roles
+WHERE is_primary_replica IN (1, -1); -- primary or not in AG
 
 OPEN db_cursor;
-FETCH NEXT FROM db_cursor INTO @DatabaseName;
+FETCH NEXT FROM db_cursor INTO @dbName6;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    SET @SQL3 = '
-    USE ' + QUOTENAME(@DatabaseName) + ';
-    
-    IF EXISTS (
-        SELECT 1
-        FROM sys.database_principals dp
-        LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
-        WHERE dp.type IN (''S'', ''U'') 
-          AND sp.sid IS NULL
-          AND dp.authentication_type_desc <> ''DATABASE_ROLE''
-          AND dp.name NOT IN (
-              ''guest'', ''INFORMATION_SCHEMA'', ''sys'', 
-              ''AllSchemaOwner'', ''SSIS_user'', ''dbo''
-          )
-    )
-    BEGIN
-        DECLARE @msg NVARCHAR(MAX) = ''ORPHANED ACCOUNTS FOUND IN DATABASE: ' + @DatabaseName + ''';
-        PRINT @msg;
+    SET @stmt = '
+    INSERT INTO #orphaned_users (DatabaseName, OrphanedUser, UserType)
+    SELECT 
+        ''' + @dbName6 + ''' AS [DatabaseName],
+        dp.name AS [OrphanedUser],
+        dp.type_desc AS [UserType]
+    FROM [' + @dbName6 + '].sys.database_principals dp
+    LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
+    WHERE dp.type IN (''S'', ''U'')
+      AND sp.sid IS NULL
+      AND dp.sid IS NOT NULL
+      AND dp.name NOT IN (''guest'', ''INFORMATION_SCHEMA'', ''sys'', ''dbo'');';
 
-        SELECT ''- '' + dp.name AS OrphanedUser
-        FROM sys.database_principals dp
-        LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
-        WHERE dp.type IN (''S'', ''U'') 
-          AND sp.sid IS NULL
-          AND dp.authentication_type_desc <> ''DATABASE_ROLE''
-          AND dp.name NOT IN (
-              ''guest'', ''INFORMATION_SCHEMA'', ''sys'', 
-              ''AllSchemaOwner'', ''SSIS_user'', ''dbo''
-          );
-    END
-    ';
+    BEGIN TRY
+        EXEC (@stmt);
+    END TRY
+    BEGIN CATCH
+        PRINT 'Error accessing database [' + @dbName + ']: ' + ERROR_MESSAGE();
+    END CATCH;
 
-    EXEC sp_executesql @SQL3;
-
-    FETCH NEXT FROM db_cursor INTO @DatabaseName;
-END
+    FETCH NEXT FROM db_cursor INTO @dbName6;
+END;
 
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
+PRINT 'ORPHANED USERS'
+
+-- Step 4: Return only real orphaned users
+SELECT SUBSTRING(DatabaseName,1,50)AS DatabaseName,
+       SUBSTRING(OrphanedUser,1,20) AS OrphanedUser
+FROM #orphaned_users;
+
+-- Cleanup
+DROP TABLE #db_roles;
+DROP TABLE #orphaned_users;
+
 ------------------------------------------------------------------
 --Databases with wrong owner found
 ---------------------------------------------------
