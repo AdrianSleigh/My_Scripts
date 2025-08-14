@@ -1,16 +1,15 @@
-
 SET NOCOUNT ON
 --SQL Instance Report
---Written By Adrian Sleigh 20/8/18
---Version 21.00 revised code and tidy 01/08/25 emojis
---Basic emoji usage in PRINT statements
+--Written By Adrian Sleigh V1.00 20/8/18
+--Version 23.00 revised code and tidy 14/08/25 FIX memory check
 ----------------------------------------------------
 PRINT N'📊 Generating Report...';
-SELECT 
+
+SELECT
     CONVERT(VARCHAR, GETDATE(), 3) + 
     ' MSSQL SQL SERVER REPORT - INSTANCE NAME IS ' + 
     @@SERVERNAME + 
-    ' | Last Restart: ' + 
+    ' | Last SQL Restart: ' + 
     CONVERT(VARCHAR, sqlserver_start_time, 120) --AS [Report Header]
 FROM 
     sys.dm_os_sys_info;
@@ -77,56 +76,36 @@ ELSE
 -----------------------------------------------------------------
 --GET INSTANCE PROPERTIES
 SELECT 
-    SUBSTRING (CAST(SERVERPROPERTY('ProductLevel' ) AS VARCHAR),1,10) AS [Product Level],        
-    SUBSTRING (CAST(SERVERPROPERTY('Edition') AS VARCHAR),1,30) AS [Edition],                      
+  SUBSTRING(SUSER_SNAME(),1,20)AS RanBy, 
+  SUBSTRING(HOST_NAME(),1,20) AS RanFrom,
+  SUBSTRING(CAST(SERVERPROPERTY('MachineName')AS varchar(20)),1,20) AS ComputerName,
+  SUBSTRING(CAST(SERVERPROPERTY('Edition') AS varchar(30)),1,30)AS 'SQL Server Edition',
+  SUBSTRING(CAST(SERVERPROPERTY('Collation') AS varchar(25)),1,25)AS Collation,
+  SUBSTRING(CAST(SERVERPROPERTY('IsClustered') AS varchar(10)),1,10)AS IsClustered, 
+  SUBSTRING(CAST(SERVERPROPERTY('IsFullTextInstalled')AS varchar(10)),1,10) AS IsFullTextInstalled 
+  FROM SYS.DM_EXEC_CONNECTIONS WHERE SESSION_ID = @@SPID
+SELECT 
+    SUBSTRING (CAST(SERVERPROPERTY('ProductLevel' ) AS VARCHAR),1,10) AS [Product Level],               
     SUBSTRING(CAST(SERVERPROPERTY('EngineEdition') AS VARCHAR),1,10) AS [Engine Edition],        
     SUBSTRING(CAST(SERVERPROPERTY('ProductUpdateLevel') AS VARCHAR),1,16) AS [Update Level],     
     SUBSTRING(CAST(SERVERPROPERTY('ProductUpdateReference') AS VARCHAR),1,16) AS [Update Ref],    
-    SUBSTRING(CAST(SERVERPROPERTY('BuildClrVersion')  AS VARCHAR),1,16) AS[CLR Version]
---GET NETWORK INFO
-SELECT  
-  SUBSTRING(CAST(CONNECTIONPROPERTY('local_net_address') AS VARCHAR(10)),1,10) AS Server_net_address,
-  SUBSTRING(CAST(CONNECTIONPROPERTY('local_tcp_port')AS VARCHAR (10)),1,10) AS local_tcp_port,
-  SUBSTRING(CAST(CONNECTIONPROPERTY('client_net_address') AS VARCHAR(10)),1,10) AS myclient_net_address,
-  SUBSTRING(CAST(CONNECTIONPROPERTY('client_net_address') AS VARCHAR(10)), 1, 5) AS client_ip_prefix
---GET GENERAL INSTANCE PROPERTIES
-Declare 
-@service_account Varchar (20)
-SELECT 
-  SUBSTRING(SUSER_SNAME(),1,20)AS RanBy, 
-  SUBSTRING(HOST_NAME(),1,20) AS RanFrom,
-  GETDATE() AS ExecutionTime,
-  SUBSTRING(CAST(SERVERPROPERTY('MachineName')AS varchar(30)),1,20) AS ComputerName,
-  SUBSTRING(CAST(SERVERPROPERTY('ServerName') AS varchar(30)),1,20) AS InstanceName 
-  FROM SYS.DM_EXEC_CONNECTIONS WHERE SESSION_ID = @@SPID
+    SUBSTRING(CAST(SERVERPROPERTY('BuildClrVersion')  AS VARCHAR),1,16) AS[CLR Version],
+    SUBSTRING(CAST(CONNECTIONPROPERTY('local_net_address') AS VARCHAR(16)),1,16) AS Server_net_address,
+    SUBSTRING(CAST(CONNECTIONPROPERTY('local_tcp_port')AS VARCHAR (10)),1,10) AS local_tcp_port,
+    SUBSTRING(CAST(CONNECTIONPROPERTY('client_net_address') AS VARCHAR(16)),1,16) AS myclient_net_address
+
   SELECT
   SUBSTRING(CAST(SERVERPROPERTY('InstanceDefaultDataPath')AS varchar(50)),1,2) AS DefaultDatadrive, 
   SUBSTRING(CAST(SERVERPROPERTY('InstanceDefaultLogPath') AS varchar(50)),1,2)AS DefaultLogdrive, 
   SUBSTRING(CAST(SERVERPROPERTY('IsHadrEnabled') AS varchar(10)),1,20)AS IsHadrEnabled, 
   SUBSTRING(CAST(SERVERPROPERTY('HadrManagerStatus') AS varchar(10)),1,20)AS AlwaysOnStatus,
-  SUBSTRING(CAST(SERVERPROPERTY('SqlCharSet') AS varchar(3)),1,5) AS SqlCharSet,  
+  SUBSTRING(CAST(SERVERPROPERTY('SqlCharSet') AS varchar(10)),1,10) AS SqlCharSet,  
   SUBSTRING(CAST(SERVERPROPERTY('SqlSortOrder') AS VARCHAR(10)),1,10) AS SqlSortOrder,  
-  SUBSTRING(CAST(SERVERPROPERTY('SqlCharSetName')AS varchar(10)),1,5) AS SqlCharSetName,  
-  SUBSTRING(CAST(SERVERPROPERTY('SqlSortOrderName')AS varchar(10)),1,20) AS SqlSortOrderName,  
+  SUBSTRING(CAST(SERVERPROPERTY('SqlCharSetName')AS varchar(10)),1,10) AS SqlCharSetName,  
+  SUBSTRING(CAST(SERVERPROPERTY('SqlSortOrderName')AS varchar(20)),1,20) AS SqlSortOrderName,  
   SUBSTRING(CAST(SERVERPROPERTY('IsIntegratedSecurityOnly')AS varchar(10)),1,20) AS IsIntegratedSecurityOnly  
   FROM SYS.DM_EXEC_CONNECTIONS WHERE SESSION_ID = @@SPID
-  SELECT
-  SUBSTRING(CAST(SERVERPROPERTY('Edition') AS varchar(50)),1,50)AS 'SQL Server Edition',
-  SUBSTRING(CAST(SERVERPROPERTY('Collation') AS varchar(10)),1,20)AS Collation,
-  SUBSTRING(CAST(SERVERPROPERTY('ProductVersion') AS varchar(10)),1,30)AS ProductVersion,  
-  SUBSTRING(CAST(SERVERPROPERTY('ProductLevel') AS varchar(10)),1,20)AS ProductLevel,
-  SUBSTRING(CAST(SERVERPROPERTY('IsClustered') AS varchar(10)),1,10)AS IsClustered, 
-  SUBSTRING(CAST(SERVERPROPERTY('IsFullTextInstalled')AS varchar(10)),1,10) AS IsFullTextInstalled 
- 
-  FROM SYS.DM_EXEC_CONNECTIONS WHERE SESSION_ID = @@SPID
-  SELECT 
-  SUBSTRING(CAST(SERVERPROPERTY('FilestreamShareName') AS varchar(20)),1,20)AS filestreamShareName,  
-  SUBSTRING(CAST(SERVERPROPERTY('FilestreamConfiguredLevel') AS varchar(10)),1,20) AS filestreamConfigLevel, 
-  SUBSTRING (LOCAL_NET_ADDRESS, 1,12) AS IPAddressOfSQLServer, 
-  SUBSTRING (CLIENT_NET_ADDRESS,1,12) AS 'ClientIPAddress' 
- --   [MAXDOP] =  (SELECT CAST(VALUE_IN_USE AS varchar(6) ) FROM SYS.CONFIGURATIONS WHERE NAME='MAX DEGREE OF PARALLELISM'),	
- --   SQLMEMORY = (SELECT CAST( VALUE_IN_USE AS varchar (12) ) FROM SYS.CONFIGURATIONS WHERE NAME='MAX SERVER MEMORY (MB)') 
-   FROM SYS.DM_EXEC_CONNECTIONS WHERE SESSION_ID = @@SPID
+
 -------------------------------------------------------------------------
 --GET SERVER CPU AND MEMORY INFO
 
@@ -150,20 +129,59 @@ DROP TABLE #temp_cpu
 PRINT 'SERVER MEMORY ALLOCATED'
 SELECT 
       cpu_count,
-	  hyperthread_ratio,
-	  [physical_memory_kb]/1024 AS 'Server_Memory_MB',
-	  [committed_kb]/1024 AS 'Used_for_SQL_MB',
-	  [committed_target_kb]/1024 AS 'Allocated_Max_Memory_SQL_MB'
-	  FROM sys.dm_os_sys_info
+                hyperthread_ratio,
+                [physical_memory_kb]/1024 AS 'Server_Memory_MB',
+                [committed_kb]/1024 AS 'Used_for_SQL_MB',
+                [committed_target_kb]/1024 AS 'Allocated_Max_Memory_SQL_MB'
+                FROM sys.dm_os_sys_info
 
 ------------------------------------
----CHECK MEMORY SETTINGS
+---CHECK MEMORY SETTINGS 14/08/25
 ------------------------------------
 -- Declare variables
 DECLARE @TotalMemoryMB INT, @AvailableMemoryMB INT;
-DECLARE @AvailablePercent DECIMAL(5,2);
+DECLARE @AvailablePercent DECIMAL(18,2);
 DECLARE @CurrentMaxMemoryMB INT, @SuggestedMaxMemoryMB INT;
-DECLARE @WorkloadRole VARCHAR(20) = 'Mixed'; -- Options: 'SSIS', 'SQL', 'Mixed'
+DECLARE @WorkloadRole VARCHAR(30);
+DECLARE @SSISPresent BIT = 0;
+DECLARE @SSRSPresent BIT = 0;
+DECLARE @UserDBCount INT;
+DECLARE @MemoryDiffPercent DECIMAL(18,2);
+
+-- Detect SSIS
+IF EXISTS (
+    SELECT 1
+    FROM sysdatabases
+    WHERE name LIKE '%SSISDB%'
+)
+    SET @SSISPresent = 1;
+
+-- Detect SSRS
+IF EXISTS (
+    SELECT 1
+    FROM sysdatabases
+    WHERE name LIKE '%ReportServer%'
+)
+    SET @SSRSPresent = 1;
+
+-- Count user databases (excluding system databases)
+SELECT @UserDBCount = COUNT(*)
+FROM sys.databases
+WHERE database_id > 4 AND state_desc = 'ONLINE';
+
+-- Determine workload role
+IF @SSISPresent = 1 AND @SSRSPresent = 1 AND @UserDBCount > 1
+    SET @WorkloadRole = 'SSRS/SSIS-Mixed';
+ELSE IF @SSISPresent = 1 AND @UserDBCount > 1
+    SET @WorkloadRole = 'SSIS-Mixed';
+ELSE IF @SSRSPresent = 1 AND @UserDBCount > 1
+    SET @WorkloadRole = 'SSRS-Mixed';
+ELSE IF @SSISPresent = 1
+    SET @WorkloadRole = 'SSIS';
+ELSE IF @SSRSPresent = 1
+    SET @WorkloadRole = 'SSRS';
+ELSE
+    SET @WorkloadRole = 'SQL';
 
 -- Get total and available memory
 SELECT 
@@ -171,47 +189,72 @@ SELECT
     @AvailableMemoryMB = available_physical_memory_kb / 1024
 FROM sys.dm_os_sys_memory;
 
--- Get current SQL Server max memory setting (with explicit conversion)
+-- Get current SQL Server max memory setting
 SELECT @CurrentMaxMemoryMB = CONVERT(INT, value_in_use)
 FROM sys.configurations
 WHERE name = 'max server memory (MB)';
 
 -- Calculate available memory percentage
 SET @AvailablePercent = 
-    (CAST(@AvailableMemoryMB AS DECIMAL(10,2)) / CAST(@TotalMemoryMB AS DECIMAL(10,2))) * 100;
+    (CAST(@AvailableMemoryMB AS DECIMAL(18,2)) / CAST(@TotalMemoryMB AS DECIMAL(18,2))) * 100;
 
 -- Determine suggested max memory based on workload
-IF @WorkloadRole = 'SSIS'
-    SET @SuggestedMaxMemoryMB = @TotalMemoryMB - 8192; -- Leave 8 GB for OS + SQL
-ELSE IF @WorkloadRole = 'SQL'
-    SET @SuggestedMaxMemoryMB = @TotalMemoryMB - 4096; -- Leave 4 GB for OS
-ELSE -- Mixed workload
-    SET @SuggestedMaxMemoryMB = @TotalMemoryMB - 16384; -- Leave 16 GB for SSIS + OS
+IF @WorkloadRole = 'SQL'
+    SET @SuggestedMaxMemoryMB = CAST(@TotalMemoryMB * 0.80 AS INT);
+ELSE IF @WorkloadRole = 'SSIS'
+    SET @SuggestedMaxMemoryMB = CAST(@TotalMemoryMB * 0.50 AS INT);
+ELSE IF @WorkloadRole = 'SSRS'
+    SET @SuggestedMaxMemoryMB = CAST(@TotalMemoryMB * 0.65 AS INT);
+ELSE IF @WorkloadRole = 'SSIS-Mixed'
+    SET @SuggestedMaxMemoryMB = CAST(@TotalMemoryMB * 0.45 AS INT);
+ELSE IF @WorkloadRole = 'SSRS-Mixed'
+    SET @SuggestedMaxMemoryMB = CAST(@TotalMemoryMB * 0.60 AS INT);
+ELSE IF @WorkloadRole = 'SSRS/SSIS-Mixed'
+    SET @SuggestedMaxMemoryMB = CAST(@TotalMemoryMB * 0.40 AS INT);
+ELSE
+    SET @SuggestedMaxMemoryMB = CAST(@TotalMemoryMB * 0.75 AS INT); -- fallback
+
+-- Calculate percentage difference with safe precision
+SET @MemoryDiffPercent = 
+    ((CAST(@CurrentMaxMemoryMB AS DECIMAL(18,2)) - CAST(@SuggestedMaxMemoryMB AS DECIMAL(18,2))) * 100.0)
+    / CAST(@SuggestedMaxMemoryMB AS DECIMAL(18,2));
 
 -- Output memory status
-PRINT '--- Memory Health Check ---';
+PRINT '--- Memory Health Check ---------';
+PRINT '---------------------------------'
+PRINT 'Workload Role Detected: ' + @WorkloadRole;
+PRINT 'User Databases Online: ' + CAST(@UserDBCount AS VARCHAR);
 PRINT 'Total Physical Memory (MB): ' + CAST(@TotalMemoryMB AS VARCHAR);
 PRINT 'Available Physical Memory (MB): ' + CAST(@AvailableMemoryMB AS VARCHAR);
 PRINT 'Available Memory Percentage: ' + CAST(@AvailablePercent AS VARCHAR) + '%';
 PRINT 'Current SQL Server Max Memory (MB): ' + CAST(@CurrentMaxMemoryMB AS VARCHAR);
 PRINT 'Suggested Max Server Memory (MB): ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR);
+PRINT '----------------------------------------------'
 
--- Recommendation
-IF @CurrentMaxMemoryMB > @SuggestedMaxMemoryMB
+-- Recommendation with tolerance
+IF @MemoryDiffPercent > 10
 BEGIN
     PRINT N'⚠️ SQL Server is using more memory than recommended for this workload.';
     PRINT N'💡 Consider reducing max server memory to ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB.';
+END
+ELSE IF @MemoryDiffPercent < -10
+BEGIN
+    PRINT N'⚠️ SQL Server is using significantly less memory than recommended.';
+    PRINT N'💡 Consider increasing max server memory to ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB.';
 END
 ELSE
 BEGIN
     PRINT N'✅ SQL Server memory configuration appears appropriate for this workload.';
 END
-
-
-
- ------------------------------------------------------------------------
+PRINT 'Always leave at least 2GB for operating system. If SSRS or SSIS is installed leave additional memory for those external services'
+PRINT 'SQL only          - leave 2GB for OS 6144MB 8GB-2G'
+PRINT 'SQL + SSRS        - leave 2GB for OS 5120MB +1 GB for SSRS'
+PRINT 'SQL + SSIS        - leave 2GB for OS 4096MB +2 GB for SSIS'
+PRINT 'SQL + SSRS + SSIS - leave 2GB for OS 3072MB +3GB for SSRS/SSIS'
+PRINT '--------------------------------------------------------------'
+-------------------------------------------------------------------------
 --GET SERVICE ACCOUNT INFO V6.0 10/03/21
- PRINT 'SERVICE ACCOUNTS'
+PRINT 'SERVICE ACCOUNTS'
 
 SELECT
 SUBSTRING(DSS.servicename,1,40),
@@ -259,7 +302,7 @@ END
 ELSE
 BEGIN
     PRINT 'NO PROXY ACCOUNTS PRESENT';
-	PRINT '-------------------------'
+              PRINT '-------------------------'
 END
 
 -- Clean up
@@ -424,7 +467,7 @@ SELECT
 [name]AS property, SUBSTRING(CONVERT(NVARCHAR(30),value_in_use),1,18)AS config_value
 FROM sys.configurations
 --WHERE configuration_id IN (109,117,505,518,1126,1519,1520,1538,1539,1540,1541,1543,1544,1545,1562,1576,1579,1580,16390,16391,16393)
- ;
+;
 GO
 
 -- CHECK INSTANT FILE INITIALIZATION
@@ -464,108 +507,108 @@ DROP TABLE #TempErrorLogs;
 ---MAXDOP OPTIMAL SETTINGS
 --------------------------------------------------
 
-		SET NOCOUNT ON;
-		USE MASTER;
+                             SET NOCOUNT ON;
+                             USE MASTER;
 
-		-- Dropping tem table in case it exists
-		IF EXISTS (SELECT  * FROM tempdb.dbo.sysobjects o WHERE o.XTYPE IN ('U') and o.id = object_id(N'tempdb..#MaxDOPDB') ) DROP TABLE #MaxDOPDB;
+                             -- Dropping tem table in case it exists
+                             IF EXISTS (SELECT  * FROM tempdb.dbo.sysobjects o WHERE o.XTYPE IN ('U') and o.id = object_id(N'tempdb..#MaxDOPDB') ) DROP TABLE #MaxDOPDB;
 
-		DECLARE
-			@SQLVersion			INT
-			,@NumaNodes 		INT
-			,@NumCPUs			INT
-			,@MaxDop			SQL_VARIANT
-			,@RecommendedMaxDop	INT
+                             DECLARE
+                                           @SQLVersion                                  INT
+                                           ,@NumaNodes                INT
+                                           ,@NumCPUs                                   INT
+                                           ,@MaxDop                                     SQL_VARIANT
+                                           ,@RecommendedMaxDop          INT
 
-		-- Getting SQL Server version
-		SELECT @SQLVersion = SUBSTRING(CONVERT(VARCHAR,SERVERPROPERTY('ProductVersion')),1,2);
+                             -- Getting SQL Server version
+                             SELECT @SQLVersion = SUBSTRING(CONVERT(VARCHAR,SERVERPROPERTY('ProductVersion')),1,2);
 
-		-- Getting number of NUMA nodes
-		SELECT @NumaNodes = COUNT(DISTINCT memory_node_id) FROM sys.dm_os_memory_clerks WHERE memory_node_id!=64
+                             -- Getting number of NUMA nodes
+                             SELECT @NumaNodes = COUNT(DISTINCT memory_node_id) FROM sys.dm_os_memory_clerks WHERE memory_node_id!=64
 
-		-- Getting number of CPUs (cores)
-		SELECT @NumCPUs = COUNT(scheduler_id) FROM sys.dm_os_schedulers WHERE status = 'VISIBLE ONLINE'
+                             -- Getting number of CPUs (cores)
+                             SELECT @NumCPUs = COUNT(scheduler_id) FROM sys.dm_os_schedulers WHERE status = 'VISIBLE ONLINE'
 
-		-- Getting current MAXDOP at instance level
-		SELECT @MaxDop = value_in_use from sys.configurations where name ='max degree of parallelism'
+                             -- Getting current MAXDOP at instance level
+                             SELECT @MaxDop = value_in_use from sys.configurations where name ='max degree of parallelism'
 
-		-- MAXDOP calculation (Instance level)
-		-- If SQL Server has single NUMA node
+                             -- MAXDOP calculation (Instance level)
+                             -- If SQL Server has single NUMA node
 
-		IF @NumaNodes = 1
-			IF @NumCPUs < 8 
-				-- If number of logical processors is less than 8, MAXDOP equals number of logical processors
-				SET @RecommendedMaxDop = @NumCPUs; 
-			ELSE
-				-- Keep MAXDOP at 8
-				SET @RecommendedMaxDop = 8;
-		ELSE
+                             IF @NumaNodes = 1
+                                           IF @NumCPUs < 8 
+                                                          -- If number of logical processors is less than 8, MAXDOP equals number of logical processors
+                                                          SET @RecommendedMaxDop = @NumCPUs; 
+                                           ELSE
+                                                          -- Keep MAXDOP at 8
+                                                          SET @RecommendedMaxDop = 8;
+                             ELSE
 
-		-- If SQL Server has multiple NUMA nodes
-			IF (@NumCPUs / @NumaNodes) < 8
-				-- IF number of logical processors per NUMA node is less than 8, MAXDOP equals or below logical processors per NUMA node
-				SET @RecommendedMaxDop = (@NumCPUs / @NumaNodes);
-			ELSE
-				--If greater than 8 logical processors per NUMA node - Keep MAXDOP at 8
-				SET @RecommendedMaxDop = 8;
+                             -- If SQL Server has multiple NUMA nodes
+                                           IF (@NumCPUs / @NumaNodes) < 8
+                                                          -- IF number of logical processors per NUMA node is less than 8, MAXDOP equals or below logical processors per NUMA node
+                                                          SET @RecommendedMaxDop = (@NumCPUs / @NumaNodes);
+                                           ELSE
+                                                          --If greater than 8 logical processors per NUMA node - Keep MAXDOP at 8
+                                                          SET @RecommendedMaxDop = 8;
 
-		-- If SQL Server is > 2016
-		IF CONVERT(INT,@SQLVersion) > 12
-			BEGIN
-				-- Getting current MAXDOP at database level
+                             -- If SQL Server is > 2016
+                             IF CONVERT(INT,@SQLVersion) > 12
+                                           BEGIN
+                                                          -- Getting current MAXDOP at database level
 
-				-- Creating temp table
-				CREATE TABLE #MaxDOPDB
-				(DBName	sysname, configuration_id int, name nvarchar (120), value_for_primary sql_variant, value_for_secondary sql_variant)
+                                                          -- Creating temp table
+                                                          CREATE TABLE #MaxDOPDB
+                                                          (DBName           sysname, configuration_id int, name nvarchar (120), value_for_primary sql_variant, value_for_secondary sql_variant)
 
-				INSERT INTO #MaxDOPDB
-				EXEC sp_msforeachdb 'USE [?]; SELECT DB_NAME(), configuration_id, name, value, value_for_secondary FROM sys.database_scoped_configurations WHERE name =''MAXDOP'''
-		
-				-- Displaying database MAXDOP configuration
-				PRINT '------------------------------------------------------------------------';
-				PRINT 'MAXDOP at Database level:';
-			   SELECT CONVERT(VARCHAR(30),dbname) as DatabaseName, CONVERT(VARCHAR(10),name) as ConfigurationName, CONVERT(INT,value_for_primary) as "MAXDOP Configured Value" FROM #MaxDOPDB
-				WHERE dbname NOT IN ('master','msdb','tempdb','model');
-				PRINT '';
+                                                          INSERT INTO #MaxDOPDB
+                                                          EXEC sp_msforeachdb 'USE [?]; SELECT DB_NAME(), configuration_id, name, value, value_for_secondary FROM sys.database_scoped_configurations WHERE name =''MAXDOP'''
+                             
+                                                          -- Displaying database MAXDOP configuration
+                                                          PRINT '------------------------------------------------------------------------';
+                                                          PRINT 'MAXDOP at Database level:';
+                                              SELECT CONVERT(VARCHAR(30),dbname) as DatabaseName, CONVERT(VARCHAR(10),name) as ConfigurationName, CONVERT(INT,value_for_primary) as "MAXDOP Configured Value" FROM #MaxDOPDB
+                                                          WHERE dbname NOT IN ('master','msdb','tempdb','model');
+                                                          PRINT '';
 
-				-- Displaying current and recommeded MAXDOP
-				PRINT '--------------------------------------------------------------';
-				PRINT 'MAXDOP at Instance level:';
-			    PRINT 'MAXDOP configured value: ' + CHAR(9) + CAST(@MaxDop AS CHAR);
-				PRINT 'MAXDOP recommended value: ' + CHAR(9) + CAST(@RecommendedMaxDop AS CHAR);
-				PRINT '--------------------------------------------------------------';
-				PRINT '';
+                                                          -- Displaying current and recommeded MAXDOP
+                                                          PRINT '--------------------------------------------------------------';
+                                                          PRINT 'MAXDOP at Instance level:';
+                                               PRINT 'MAXDOP configured value: ' + CHAR(9) + CAST(@MaxDop AS CHAR);
+                                                          PRINT 'MAXDOP recommended value: ' + CHAR(9) + CAST(@RecommendedMaxDop AS CHAR);
+                                                          PRINT '--------------------------------------------------------------';
+                                                          PRINT '';
 
-				IF (@MaxDop <> @RecommendedMaxDop)
-					BEGIN
-						PRINT 'In case you want to change MAXDOP to the recommeded value, please use this script:';
-						PRINT '';
-						PRINT 'EXEC sp_configure ''max degree of parallelism'',' + CAST(@RecommendedMaxDop AS CHAR);
-						PRINT 'GO';
-						PRINT 'RECONFIGURE WITH OVERRIDE;';
-					END
-			END;
-		ELSE
-			BEGIN
-				-- Displaying current and recommeded MAXDOP
-				PRINT '--------------------------------------------------------------';
-				PRINT 'MAXDOP at Instance level:';
-				PRINT '--------------------------------------------------------------';
-				PRINT 'MAXDOP configured value: ' + CHAR(9) + CAST(@MaxDop AS CHAR);
-				PRINT 'MAXDOP recommended value: ' + CHAR(9) + CAST(@RecommendedMaxDop AS CHAR);
-				PRINT '--------------------------------------------------------------';
-				PRINT '';
+                                                          IF (@MaxDop <> @RecommendedMaxDop)
+                                                                        BEGIN
+                                                                                      PRINT 'In case you want to change MAXDOP to the recommeded value, please use this script:';
+                                                                                      PRINT '';
+                                                                                      PRINT 'EXEC sp_configure ''max degree of parallelism'',' + CAST(@RecommendedMaxDop AS CHAR);
+                                                                                      PRINT 'GO';
+                                                                                      PRINT 'RECONFIGURE WITH OVERRIDE;';
+                                                                        END
+                                           END;
+                             ELSE
+                                           BEGIN
+                                                          -- Displaying current and recommeded MAXDOP
+                                                          PRINT '--------------------------------------------------------------';
+                                                          PRINT 'MAXDOP at Instance level:';
+                                                          PRINT '--------------------------------------------------------------';
+                                                          PRINT 'MAXDOP configured value: ' + CHAR(9) + CAST(@MaxDop AS CHAR);
+                                                          PRINT 'MAXDOP recommended value: ' + CHAR(9) + CAST(@RecommendedMaxDop AS CHAR);
+                                                          PRINT '--------------------------------------------------------------';
+                                                          PRINT '';
 
-				IF (@MaxDop <> @RecommendedMaxDop)
-					BEGIN
-						PRINT N' 💡 In case you want to change MAXDOP to the recommeded value, please use this script:';
-						PRINT '';
-						PRINT 'EXEC sp_configure ''max degree of parallelism'',' + CAST(@RecommendedMaxDop AS CHAR);
-						PRINT 'GO';
-						PRINT 'RECONFIGURE WITH OVERRIDE;';
-					END
-			END;
-	
+                                                          IF (@MaxDop <> @RecommendedMaxDop)
+                                                                        BEGIN
+                                                                                      PRINT N' 💡 In case you want to change MAXDOP to the recommeded value, please use this script:';
+                                                                                      PRINT '';
+                                                                                      PRINT 'EXEC sp_configure ''max degree of parallelism'',' + CAST(@RecommendedMaxDop AS CHAR);
+                                                                                      PRINT 'GO';
+                                                                                      PRINT 'RECONFIGURE WITH OVERRIDE;';
+                                                                        END
+                                           END;
+              
 ----------------------------------------------------------------------------
 --GET DATABASE INFO
 PRINT '                                            '
@@ -607,18 +650,18 @@ WITH db_stats AS (
 )
 SELECT 
     SUBSTRING(database_name,1,60) AS DatabaseName,
-	CAST(100.0 * total_elapsed_time / SUM(total_elapsed_time) OVER () AS DECIMAL(5,2)) AS PercentBusy,
+              CAST(100.0 * total_elapsed_time / SUM(total_elapsed_time) OVER () AS DECIMAL(5,2)) AS PercentBusy,
     total_executions,
     total_elapsed_time,
     total_worker_time,
     total_logical_reads,
     total_logical_writes
- 
+
 FROM 
     db_stats
 ORDER BY 
     PercentBusy DESC;
- 
+
 ---------------------------------------------------------------------------
 -- Get current SQL Server version
 PRINT 'DB COMPATIBILITY'
@@ -897,14 +940,14 @@ BEGIN
 
     PRINT N'⚠️ OLD STATISTICS FOUND. Details below:';
     SELECT 
-	SUBSTRING(DatabaseName,1,50) AS DatabaseName,
-	SUBSTRING(SchemaName,1,40) AS SchemaName,
-	SUBSTRING(TableName,1,60) AS TableName,
-	SUBSTRING(StatisticName,1,60) AS StatisticsName,
-	LastUpdated
-	FROM ##OldStats 
-	
-	ORDER BY DatabaseName, SchemaName, TableName, StatisticName;
+              SUBSTRING(DatabaseName,1,50) AS DatabaseName,
+              SUBSTRING(SchemaName,1,40) AS SchemaName,
+              SUBSTRING(TableName,1,60) AS TableName,
+              SUBSTRING(StatisticName,1,60) AS StatisticsName,
+              LastUpdated
+              FROM ##OldStats 
+              
+              ORDER BY DatabaseName, SchemaName, TableName, StatisticName;
 
     PRINT '------------------------------------------------------------';
     PRINT '-- Copy and run the following script to update ALL statistics in ALL PRIMARY databases:';
@@ -992,7 +1035,7 @@ BEGIN CATCH
     PRINT 'Error checking replication roles: ' + ERROR_MESSAGE();
 END CATCH;
 -------------------------------------------------------------------
------------------------------------------------------------	  
+-----------------------------------------------------------         
 --GET CLUSTER INFO
 IF SERVERPROPERTY('IsClustered') = 1
 BEGIN
@@ -1311,13 +1354,13 @@ ORDER BY
 
 ------GET DEFAULT BACKUP LOCATION
 
-	DECLARE @backupdir nvarchar(4000);
+              DECLARE @backupdir nvarchar(4000);
 EXEC master.dbo.xp_instance_regread 
  N'HKEY_LOCAL_MACHINE'
- , N'Software\Microsoft\MSSQLServer\MSSQLServer'
- , N'BackupDirectory'
- , @backupdir output;
- 
+, N'Software\Microsoft\MSSQLServer\MSSQLServer'
+, N'BackupDirectory'
+, @backupdir output;
+
 PRINT 'DEFAULT BACKUP LOCATION'
 SELECT SUBSTRING(@backupdir,1,100)
 
@@ -1382,7 +1425,7 @@ IF EXISTS (
 )
 BEGIN
     PRINT 'MAINTENANCE PLAN FOUND'
-	PRINT '----------------------'
+              PRINT '----------------------'
 
     SELECT 
        SUBSTRING(p.name,1,50) AS MaintenancePlanName,
@@ -1410,6 +1453,7 @@ BEGIN
     PRINT 'NO MAINTENANCE PLAN FOUND';
 END
 
+--GET LIST ALL SSIS PACKAGES
 --GET LIST ALL SSIS PACKAGES
 
 PRINT '----------------------'
@@ -1510,32 +1554,43 @@ GO
 -----------------------------------------------
 --GET SSIS SCALE OUT
 ---------------------------------------------------
-BEGIN TRY
-    USE SSISDB;
+IF EXISTS (
+    SELECT * 
+    FROM master.dbo.sysdatabases
+    WHERE name = 'SSISDB'
+)
+BEGIN
+    PRINT N'⚠️ SSISDB FOUND...';
 
-    IF EXISTS (
-        SELECT 1
-        FROM SSISDB.catalog.catalog_properties
-        WHERE property_name = 'ScaleOutMasterEnabled'
-    )
-    BEGIN
-        DECLARE @enabled BIT;
-        SELECT @enabled = property_value
-        FROM SSISDB.catalog.catalog_properties
-        WHERE property_name = 'ScaleOutMasterEnabled';
+    BEGIN TRY
+        IF EXISTS (
+            SELECT 1
+            FROM SSISDB.catalog.catalog_properties
+            WHERE property_name = 'ScaleOutMasterEnabled'
+        )
+        BEGIN
+            DECLARE @enabled BIT;
+            SELECT @enabled = property_value
+            FROM SSISDB.catalog.catalog_properties
+            WHERE property_name = 'ScaleOutMasterEnabled';
 
-        IF @enabled = 1
-            PRINT 'SSIS SCALE OUT DEPLOYED';
+            IF @enabled = 1
+                PRINT 'SSIS SCALE OUT DEPLOYED';
+            ELSE
+                PRINT 'NO SSIS SCALE OUT';
+        END
         ELSE
-            PRINT 'No Scale Out';
-    END
-    ELSE
-        PRINT 'NO SSIS SCALE OUT CONFIGURED';
-END TRY
-BEGIN CATCH
-    PRINT 'SSISDB not found or Scale Out not configured';
-END CATCH;
-----------------------------------------------------------
+            PRINT 'NO SSIS SCALE OUT CONFIGURED';
+    END TRY
+    BEGIN CATCH
+        PRINT 'Error accessing SSISDB catalog properties';
+    END CATCH;
+END
+ELSE
+BEGIN
+    PRINT '';
+END
+
 PRINT '----------------------'
 
 -- Check for user tables in MASTER
@@ -1562,7 +1617,7 @@ BEGIN
     PRINT N'✅ NO USER TABLES FOUND IN MASTER';
 END
 GO
-	PRINT '-------------------------------'
+              PRINT '-------------------------------'
 -- Check for user tables in MSDB
 USE msdb;
 GO
@@ -1587,10 +1642,10 @@ BEGIN
     PRINT N' ✅ NO USER TABLES FOUND IN MSDB';
 END
 GO
-	PRINT '----------------------------------'
+              PRINT '----------------------------------'
 
-	--------------------------------------------------
-	--Databases that are accessing system tables
+              --------------------------------------------------
+              --Databases that are accessing system tables
 --------------------------------------------
 SET NOCOUNT ON;
 
@@ -1668,7 +1723,7 @@ SUBSTRING(SchemaName,1,20)AS SchemaName--,CodeSnippet
 FROM tempdb.dbo.SystemTableScanResults;
 
 -- Optional: clean up
- DROP TABLE tempdb.dbo.SystemTableScanResults;
+DROP TABLE tempdb.dbo.SystemTableScanResults;
 ----------------------------------------------
 -----CHECK MAXDOP ----------------------------
 DECLARE @service_account VARCHAR(50) = '';
@@ -1727,7 +1782,7 @@ BEGIN
     PRINT N'⚠️ MAXDOP MAY NOT BE SET CORRECTLY';
     PRINT 'Current MAXDOP: ' + CAST(@maxdop AS VARCHAR);
     PRINT 'CPU Count: ' + CAST(@cpu_count AS VARCHAR);
- --   PRINT 'Recommended MAXDOP (Half): ' + CAST(@recommended_maxdop_half AS VARCHAR);
+--   PRINT 'Recommended MAXDOP (Half): ' + CAST(@recommended_maxdop_half AS VARCHAR);
     IF @cpu_count = 4
         PRINT N'💡 RECOMMENDED: Set MAXDOP to 4 for 4-core systems.';
 END
@@ -1735,7 +1790,7 @@ ELSE
 BEGIN
     PRINT N'✅ MAXDOP IS CORRECTLY SET.';
 END
-	PRINT '------------------------'
+              PRINT '------------------------'
 -- Check cost threshold
 IF @costthreshhold <> '50'
 BEGIN
@@ -1764,6 +1819,8 @@ END
 ELSE
     PRINT N'✅ ADVANCED OPTIONS ENABLED';
 ----------------------------------------------------------
+------FIND SSRS REPORTS DEPLOYED
+------13/08/25
 SET NOCOUNT ON;
 SET XACT_ABORT OFF;
 
@@ -1781,7 +1838,7 @@ BEGIN TRY
     -- Step 2: If found, check AG status and list all replicas
     IF @ReportDbName IS NOT NULL
     BEGIN
-        PRINT 'SSRS DATABASE DISCOVERED: ' + @ReportDbName;
+        PRINT N'⚠️ SSRS DATABASE DISCOVERED: ' + @ReportDbName;
 
         IF EXISTS (
             SELECT 1
@@ -1789,7 +1846,7 @@ BEGIN TRY
             WHERE database_id = DB_ID(@ReportDbName)
         )
         BEGIN
-            PRINT 'Availability Group detected. Listing replica roles:';
+            PRINT N'⚠️ Availability Group detected. Listing replica roles:';
 
             SELECT 
                 SUBSTRING(ag.name,1,60) AS AG_Name,
@@ -1803,7 +1860,7 @@ BEGIN TRY
         END
         ELSE
         BEGIN
-            PRINT 'SSRS DATABASE IS NOT PART OF AN AVAILABILITY GROUP.';
+            PRINT N'⚠️ SSRS DATABASE IS NOT PART OF AN AVAILABILITY GROUP.';
         END
 
         -- Step 3: Run SSRS config query
@@ -1835,17 +1892,111 @@ END TRY
 BEGIN CATCH
     PRINT '';
 END CATCH
-PRINT '---------------------------------------'
-  ----------------------------------------------------------------
- -- KERBEROS CHECK
+     PRINT '-------------------------------'
+----------------------------------------------
+SET NOCOUNT ON;
+DECLARE @SSRSInstalled BIT = 0;
+DECLARE @SSRSDatabaseName NVARCHAR(128);
+DECLARE @sql5 NVARCHAR(MAX);
 
- IF EXISTS (
+-- Check for SSRS-related databases
+SELECT TOP 1 @SSRSDatabaseName = name
+FROM master.dbo.sysdatabases
+WHERE name LIKE 'ReportServer%';
+
+IF @SSRSDatabaseName IS NOT NULL
+BEGIN
+    SET @SSRSInstalled = 1;
+END
+
+-- Conditional execution
+IF @SSRSInstalled = 1
+BEGIN
+    PRINT N'⚠️ REPORTING SERVER DATABASES FOUND: ' + @SSRSDatabaseName;
+
+    SET @sql5 = '
+    SELECT
+        CASE CL.Type
+            WHEN 1 THEN ''Folder''
+            WHEN 2 THEN ''Report''
+            WHEN 3 THEN ''Resource''
+            WHEN 4 THEN ''Linked Report''
+            WHEN 5 THEN ''Data Source''
+        END                                 AS ObjectType,
+        SUBSTRING(CP.Name,1,20)             AS ParentName,
+        SUBSTRING(CL.Name,1,60)             AS Name,
+        SUBSTRING(CL.Path ,1,90)            AS Path,
+        SUBSTRING(CU.UserName,1,20)         AS CreatedBy,
+        CL.CreationDate                     AS CreationDate,
+        SUBSTRING(UM.UserName,1,20)         AS ModifiedBy,
+        CL.ModifiedDate                     AS ModifiedDate,
+        CE.CountStart                       AS TotalExecutions,
+        SUBSTRING(EL.InstanceName,1,20)     AS LastExecutedInstanceName,
+        SUBSTRING(EL.UserName,1,20)         AS LastExecuter,
+        EL.Format                           AS LastFormat,
+        EL.TimeStart                        AS LastTimeStarted,
+        EL.TimeEnd                          AS LastTimeEnded,
+        EL.TimeDataRetrieval                AS LastTimeDataRetrieval,
+        EL.TimeProcessing                   AS LastTimeProcessing,
+        EL.TimeRendering                    AS LastTimeRendering,
+        SUBSTRING(EL.Status,1,10)           AS LastResult,
+        EL.ByteCount                        AS LastByteCount,
+        EL.[RowCount]                       AS LastRowCount,
+        SUBSTRING(SO.UserName,1,20)         AS SubscriptionOwner,
+        SUBSTRING(SU.UserName,1,20)         AS SubscriptionModifiedBy,
+        SS.ModifiedDate                     AS SubscriptionModifiedDate,
+        SUBSTRING(SS.Description,1,30)      AS SubscriptionDescription,
+        SUBSTRING(SS.LastStatus,1,10)       AS SubscriptionLastResult,
+        SS.LastRunTime                      AS SubscriptionLastRunTime
+    FROM [' + @SSRSDatabaseName + '].dbo.Catalog CL
+    JOIN [' + @SSRSDatabaseName + '].dbo.Catalog CP
+        ON CP.ItemID = CL.ParentID
+    JOIN [' + @SSRSDatabaseName + '].dbo.Users CU
+        ON CU.UserID = CL.CreatedByID
+    JOIN [' + @SSRSDatabaseName + '].dbo.Users UM
+        ON UM.UserID = CL.ModifiedByID
+    LEFT JOIN ( SELECT
+                    ReportID,
+                    MAX(TimeStart) LastTimeStart
+                FROM [' + @SSRSDatabaseName + '].dbo.ExecutionLog
+                GROUP BY ReportID) LE
+        ON LE.ReportID = CL.ItemID
+    LEFT JOIN ( SELECT
+                    ReportID,
+                    COUNT(TimeStart) CountStart
+                FROM [' + @SSRSDatabaseName + '].dbo.ExecutionLog
+                GROUP BY ReportID) CE
+        ON CE.ReportID = CL.ItemID
+    LEFT JOIN [' + @SSRSDatabaseName + '].dbo.ExecutionLog EL
+        ON EL.ReportID = LE.ReportID
+        AND EL.TimeStart = LE.LastTimeStart
+    LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Subscriptions SS
+        ON SS.Report_OID = CL.ItemID
+    LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Users SO
+        ON SO.UserID = SS.OwnerID
+    LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Users SU
+        ON SU.UserID = SS.ModifiedByID
+    WHERE 1 = 1
+    ORDER BY CP.Name, CL.Name ASC;
+    ';
+
+    EXEC sp_executesql @sql5;
+END
+ELSE
+BEGIN
+    PRINT N'✅ NO SSRS DATABASE FOUND. Skipping report analysis.';
+END
+
+  ----------------------------------------------------------------
+-- KERBEROS CHECK
+
+IF EXISTS (
     SELECT 1
     FROM sys.dm_exec_connections
     WHERE session_id = @@SPID AND auth_scheme = 'KERBEROS'
 )
     PRINT 'THE INSTANCE IS CONFIGURED TO USE KERBEROS';
-	PRINT '------------------------------------------'
+              PRINT '------------------------------------------'
   ----------------------------------------------------------------
   --QUERYSTORE
 --------------------------------------------------------------------
@@ -1970,39 +2121,81 @@ BEGIN
     SELECT * FROM @Results;
 END
   -----------------------------------------------------------------
-PRINT N'🔍 Looking for login fails in the last 24 hours....'
-IF EXISTS (
-    SELECT 1
-    FROM sys.fn_trace_gettable(
-        (SELECT TOP 1 CAST(value AS VARCHAR(255)) 
-         FROM sys.fn_trace_getinfo(NULL) 
-         WHERE property = 2), 
-        DEFAULT
-    )
-    WHERE EventClass = 20  -- Audit Login Failed
-      AND StartTime >= DATEADD(DAY, -1, GETDATE())
-)
+SET NOCOUNT ON;
+
+DECLARE @Results1 TABLE (
+    DatabaseName NVARCHAR(128),
+    Owner NVARCHAR(128)
+);
+
+-- Check for non-system databases with non-SA owners
+INSERT INTO @Results1 (DatabaseName, Owner)
+SELECT 
+   SUBSTRING(name, 1, 50) AS DatabaseName,
+   SUBSTRING(SUSER_SNAME(owner_sid), 1, 30) AS Owner
+FROM sys.databases
+WHERE state_desc = 'ONLINE'
+  AND database_id > 4
+  AND SUSER_SNAME(owner_sid) IS NOT NULL
+  AND UPPER(SUSER_SNAME(owner_sid)) <> 'SA'
+  AND UPPER(SUSER_SNAME(owner_sid)) <> 'MOXIREADER';
+
+IF EXISTS (SELECT 1 FROM @Results1)
 BEGIN
-    SELECT 
-        SUBSTRING( LoginName,1,40)As LoginName,
-        StartTime,
-        SUBSTRING(HostName,1,30)AS HostName,
-        SUBSTRING(ApplicationName,1,30)AS ApplicationName,
-        SUBSTRING(TextData,1,200) AS ErrorMessage
-    FROM sys.fn_trace_gettable(
-        (SELECT TOP 1 CAST(value AS VARCHAR(255)) 
-         FROM sys.fn_trace_getinfo(NULL) 
-         WHERE property = 2), 
-        DEFAULT
-    )
-    WHERE EventClass = 20
-      AND StartTime >= DATEADD(DAY, -1, GETDATE())
-    ORDER BY StartTime DESC;
+    PRINT N'⚠️ DATABASES FOUND WITH WRONG OWNER';
+    SELECT * FROM @Results1;
+END
+
+-- Check if default trace is enabled
+DECLARE @TraceEnabled INT;
+SELECT @TraceEnabled = CAST(value AS INT)
+FROM sys.configurations
+WHERE name = 'default trace enabled';
+
+PRINT N'🔍 Looking for login fails in the last 24 hours....';
+
+IF @TraceEnabled = 1
+BEGIN
+    DECLARE @TraceFile NVARCHAR(255);
+    SELECT TOP 1 @TraceFile = CAST(value AS NVARCHAR(255))
+    FROM sys.fn_trace_getinfo(NULL)
+    WHERE property = 2;
+
+    IF @TraceFile IS NOT NULL AND @TraceFile <> ''
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM sys.fn_trace_gettable(@TraceFile, DEFAULT)
+            WHERE EventClass = 20
+              AND StartTime >= DATEADD(DAY, -1, GETDATE())
+        )
+        BEGIN
+            SELECT 
+                SUBSTRING(LoginName, 1, 40) AS LoginName,
+                StartTime,
+                SUBSTRING(HostName, 1, 30) AS HostName,
+                SUBSTRING(ApplicationName, 1, 30) AS ApplicationName,
+                SUBSTRING(TextData, 1, 200) AS ErrorMessage
+            FROM sys.fn_trace_gettable(@TraceFile, DEFAULT)
+            WHERE EventClass = 20
+              AND StartTime >= DATEADD(DAY, -1, GETDATE())
+            ORDER BY StartTime DESC;
+        END
+        ELSE
+        BEGIN
+            PRINT N'✅ NO FAILED LOGINS LAST 24 HOURS';
+        END
+    END
+    ELSE
+    BEGIN
+        PRINT N'⚠️ Default trace is enabled but no trace file found.';
+    END
 END
 ELSE
 BEGIN
-    PRINT N'✅ NO FAILED LOGINS LAST 24 HOURS';
+    PRINT N'⚠️ Default trace is not enabled on this SQL Server instance.';
 END
+
 -----------------------------------------------
 PRINT 'CURRENT ERRORLOG [ERRORS]'
 PRINT '-------------------------'
@@ -2025,10 +2218,10 @@ EXEC xp_readerrorlog;
 
 SELECT   LogDate,ProcessInfo,LogText
     FROM #ReadErrorLog
-    WHERE 	
-	--LogDate >= getdate()-7
+    WHERE           
+              --LogDate >= getdate()-7
     -- AND   
-	LogText LIKE '%error%' 
+              LogText LIKE '%error%' 
 
 -- Clean up
 DROP TABLE #ReadErrorLog
@@ -2036,26 +2229,27 @@ DROP TABLE #ReadErrorLog
 --------------------BACKUP INFORMATION FOR 1 WEEK
 PRINT 'FULL BACKUPS FOR LAST WEEK'
 PRINT '--------------------------'
-		USE MSDB
-		 SELECT 
+                             USE MSDB
+                             SELECT 
                SUBSTRING ([database_name],1,50) as 'DB',
-			   [backup_start_date] as 'backup start',
-			   [backup_finish_date] as 'backup finish',
+                                              [backup_start_date] as 'backup start',
+                                              [backup_finish_date] as 'backup finish',
                SUBSTRING([physical_device_name],1,90) as BackupLocation,
-				[type],
-				SUBSTRING(CAST([backup_size]AS VARCHAR(20)),1,20) as 'Size in KB' ,
-				SUBSTRING([recovery_model],1,10) as 'Model',
+                                                          [type],
+                                                          SUBSTRING(CAST([backup_size]AS VARCHAR(20)),1,20) as 'Size in KB' ,
+                                                          SUBSTRING([recovery_model],1,10) as 'Model',
                 [is_snapshot]as 'Snapshot',
-				[is_copy_only],
+                                                          [is_copy_only],
                 SUBSTRING([name],1,40)as 'backup utility',
-				SUBSTRING([user_name],1,26) as 'utility account'
+                                                          SUBSTRING([user_name],1,26) as 'utility account'
            FROM backupset 
-		   JOIN msdb.dbo.backupmediafamily
+                                JOIN msdb.dbo.backupmediafamily
              ON(backupset.media_set_id=backupmediafamily.media_set_id)
-		WHERE backup_finish_date >= DATEADD(week, -1, GETDATE())
-		AND type like 'D'
-	    ORDER BY database_name ,backup_start_date DESC
+                             WHERE backup_finish_date >= DATEADD(week, -1, GETDATE())
+                             AND type like 'D'
+                  ORDER BY database_name ,backup_start_date DESC
 --------------------------------------------------------------------------------------------
 
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
+
