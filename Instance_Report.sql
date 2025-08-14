@@ -2264,9 +2264,15 @@ WHERE state_desc = 'ONLINE'
 IF EXISTS (SELECT 1 FROM @Results)
 BEGIN
     PRINT N'⚠️ DATABASES FOUND WITH WRONG OWNER';
-    SELECT * FROM @Results;
+--   SELECT * FROM @Results;
+SELECT SUBSTRING(DatabaseName,1,50)AS DatabaseName,
+       SUBSTRING(Owner,1,20) AS OrphanedUser
+FROM @Results
+
 END
+
   -----------------------------------------------------------------
+  -- Check for non-system databases with non-SA owners
 SET NOCOUNT ON;
 
 DECLARE @Results1 TABLE (
@@ -2274,7 +2280,6 @@ DECLARE @Results1 TABLE (
     Owner NVARCHAR(128)
 );
 
--- Check for non-system databases with non-SA owners
 INSERT INTO @Results1 (DatabaseName, Owner)
 SELECT 
    SUBSTRING(name, 1, 50) AS DatabaseName,
@@ -2289,10 +2294,15 @@ WHERE state_desc = 'ONLINE'
 IF EXISTS (SELECT 1 FROM @Results1)
 BEGIN
     PRINT N'⚠️ DATABASES FOUND WITH WRONG OWNER';
-    SELECT * FROM @Results1;
-END
 
+	SELECT 
+	SUBSTRING(DatabaseName,1,50)AS DatabaseName, 
+	SUBSTRING(Owner,1,20) AS Owner
+	 FROM @Results1;
+END
+----------------------------------------------------------------
 -- Check if default trace is enabled
+
 DECLARE @TraceEnabled INT;
 SELECT @TraceEnabled = CAST(value AS INT)
 FROM sys.configurations
@@ -2365,9 +2375,9 @@ EXEC xp_readerrorlog;
 SELECT   LogDate,ProcessInfo,LogText
     FROM #ReadErrorLog
     WHERE           
-            LogDate >= getdate()-7
-    AND   
-            LogText LIKE '%error%' 
+          LogDate >= getdate()-7
+     AND   
+          LogText LIKE '%error%' 
 
 -- Clean up
 DROP TABLE #ReadErrorLog
@@ -2398,5 +2408,7 @@ PRINT '--------------------------'
 
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
+
+
 
 
