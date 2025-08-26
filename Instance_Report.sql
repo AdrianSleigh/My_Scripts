@@ -1,7 +1,7 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Written By Adrian Sleigh V1.00 20/8/18
---Version 23.00 revised code and tidy 14/08/25 FIX memory check
+--Version 23.10 revised code and tidy 26/08/25 remove stats check
 ----------------------------------------------------
 PRINT N'📊 Generating Report...';
 
@@ -870,122 +870,6 @@ END
 ELSE
 BEGIN
     PRINT 'NO OLA HALLENGREN SCRIPTS PRESENT IN ANY DATABASE.';
-END
--------------------------------------------------------------
-
---GET OLD STATISTICS
---find any stats that are 2 days old
---31/07/25 added
---------------------------------------------------------
-SET NOCOUNT ON
-DECLARE @DatabaseName NVARCHAR(128);
-DECLARE @SQL NVARCHAR(MAX);
-DECLARE @OldStatsFound BIT = 0;
-
--- Temp table to collect outdated stats info
-IF OBJECT_ID('tempdb..##OldStats') IS NOT NULL DROP TABLE ##OldStats;
-CREATE TABLE ##OldStats (
-    DatabaseName NVARCHAR(128),
-    SchemaName NVARCHAR(128),
-    TableName NVARCHAR(128),
-    StatisticName NVARCHAR(128),
-    LastUpdated DATETIME
-);
-
--- Cursor to loop through user databases that are online, not system, and not secondary replicas
-DECLARE db_cursor CURSOR FOR
-SELECT d.name
-FROM sys.databases d
-LEFT JOIN sys.dm_hadr_availability_replica_states rs
-    ON d.replica_id = rs.replica_id
-WHERE d.state_desc = 'ONLINE'
-  AND d.name NOT IN ('master', 'tempdb', 'model', 'msdb')
-  AND (d.replica_id IS NULL OR rs.role_desc = 'PRIMARY');
-
-OPEN db_cursor;
-FETCH NEXT FROM db_cursor INTO @DatabaseName;
-
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    SET @SQL = '
-    USE ' + QUOTENAME(@DatabaseName) + ';
-    INSERT INTO ##OldStats (DatabaseName, SchemaName, TableName, StatisticName, LastUpdated)
-    SELECT 
-        DB_NAME() AS DatabaseName,
-        s.name AS SchemaName,
-        t.name AS TableName,
-        st.name AS StatisticName,
-        STATS_DATE(t.object_id, st.stats_id) AS LastUpdated
-    FROM 
-        sys.stats st
-    JOIN 
-        sys.tables t ON st.object_id = t.object_id
-    JOIN 
-        sys.schemas s ON t.schema_id = s.schema_id
-    WHERE 
-        STATS_DATE(t.object_id, st.stats_id) < DATEADD(DAY, -2, GETDATE());
-    ';
-    EXEC sp_executesql @SQL;
-
-    FETCH NEXT FROM db_cursor INTO @DatabaseName;
-END
-
-CLOSE db_cursor;
-DEALLOCATE db_cursor;
-
--- Output results and update script
-IF EXISTS (SELECT 1 FROM ##OldStats)
-BEGIN
-    SET @OldStatsFound = 1;
-
-    PRINT N'⚠️ OLD STATISTICS FOUND. Details below:';
-    SELECT 
-              SUBSTRING(DatabaseName,1,50) AS DatabaseName,
-              SUBSTRING(SchemaName,1,40) AS SchemaName,
-              SUBSTRING(TableName,1,60) AS TableName,
-              SUBSTRING(StatisticName,1,60) AS StatisticsName,
-              LastUpdated
-              FROM ##OldStats 
-              
-              ORDER BY DatabaseName, SchemaName, TableName, StatisticName;
-
-    PRINT '------------------------------------------------------------';
-    PRINT '-- Copy and run the following script to update ALL statistics in ALL PRIMARY databases:';
-    PRINT '
-DECLARE @DatabaseName NVARCHAR(128);
-DECLARE @SQL NVARCHAR(MAX);
-
-DECLARE db_cursor CURSOR FOR
-SELECT d.name
-FROM sys.databases d
-LEFT JOIN sys.dm_hadr_availability_replica_states rs
-    ON d.replica_id = rs.replica_id
-WHERE d.state_desc = ''ONLINE''
-  AND d.name NOT IN (''master'', ''tempdb'', ''model'', ''msdb'')
-  AND (d.replica_id IS NULL OR rs.role_desc = ''PRIMARY'');
-
-OPEN db_cursor;
-FETCH NEXT FROM db_cursor INTO @DatabaseName;
-
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    SET @SQL = ''
-    USE '' + QUOTENAME(@DatabaseName) + '';
-    EXEC sp_updatestats;
-    '';
-    EXEC sp_executesql @SQL;
-
-    FETCH NEXT FROM db_cursor INTO @DatabaseName;
-END
-
-CLOSE db_cursor;
-DEALLOCATE db_cursor;
-';
-    PRINT '------------------------------------------------------------';
-END
-ELSE
-BEGIN
-    PRINT N'✅ ALL STATISTICS ARE RECENT. No action needed.';
 END
 --------------------------------------------------------------------------
 --GET REPLICATION ROLE
@@ -2408,7 +2292,6 @@ PRINT '--------------------------'
 
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
-
 
 
 
