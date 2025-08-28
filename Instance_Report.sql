@@ -1,7 +1,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
---Written By Adrian Sleigh V1.00 28/8/25
---Version 23.20 revised version check and added SSRS service account find
+--Designed to collate most useful data to create report for dbas to get an instant view.	
+--Written By Adrian Sleigh 28/08/25
+--Version 23.30 revised version check added SSRS service account find added SSAS connection find
 ----------------------------------------------------
 PRINT N'📊 Generating Report...';
 
@@ -2091,6 +2092,277 @@ ELSE
 BEGIN
     PRINT N'✅ NO SSRS DATABASE FOUND. Skipping report analysis.';
 END
+------------------------------------------------------------------
+/* =====================================================================
+   Detect whether SSAS is being used from the SQL Server Database Engine
+   Checks:
+     1) Linked servers using MSOLAP (SSAS provider)
+     2) SQL Agent jobs with Analysis Services steps (ANALYSISCOMMAND/QUERY)
+     3) SSIS packages referencing SSAS (MSDB legacy store)
+     4) SSIS packages referencing SSAS (SSISDB project deployment)
+        - AG-aware: handles SSISDB when this replica is secondary
+   Output:
+     - Detail rows for each category (if found)
+     - A summary status at the end
+   Notes:
+     - SSAS usage can also occur externally (e.g., Power BI/Excel) with no traces here.
+   ===================================================================== */
+SET NOCOUNT ON;
+
+-- =========================================================
+-- Prep: temp tables for results
+-- =========================================================
+IF OBJECT_ID('tempdb..#LinkedServers') IS NOT NULL DROP TABLE #LinkedServers;
+IF OBJECT_ID('tempdb..#AgentJobs')    IS NOT NULL DROP TABLE #AgentJobs;
+IF OBJECT_ID('tempdb..#SSIS_MSDB')    IS NOT NULL DROP TABLE #SSIS_MSDB;
+IF OBJECT_ID('tempdb..#SSIS_SSISDB')  IS NOT NULL DROP TABLE #SSIS_SSISDB;
+
+CREATE TABLE #LinkedServers
+(
+    name         sysname,
+    provider     nvarchar(128),
+    data_source  nvarchar(4000),
+    product      nvarchar(128),
+    is_linked    bit
+);
+
+CREATE TABLE #AgentJobs
+(
+    JobName   sysname,
+    StepName  sysname,
+    Subsystem nvarchar(50)
+);
+
+CREATE TABLE #SSIS_MSDB
+(
+    FolderName  sysname,
+    PackageName sysname,
+    Location    nvarchar(20)  -- 'MSDB'
+);
+
+CREATE TABLE #SSIS_SSISDB
+(
+    FolderName   nvarchar(128),
+    ProjectName  nvarchar(128),
+    PackageName  nvarchar(260),
+    Location     nvarchar(20)  -- 'SSISDB'
+);
+
+-- Optional: avoid blocking when scanning metadata
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+PRINT N'ℹ️ CHECKING FOR SSAS CONNECTIVITY....'
+-- =========================================================
+-- 1) Linked servers using MSOLAP (SSAS OLE DB provider)
+-- =========================================================
+BEGIN TRY
+    INSERT INTO #LinkedServers (name, provider, data_source, product, is_linked)
+    SELECT s.name, s.provider, s.data_source, s.product, s.is_linked
+    FROM sys.servers AS s
+    WHERE s.is_linked = 1
+      AND s.provider LIKE N'MSOLAP%'; -- e.g., MSOLAP, MSOLAP.8, MSOLAP.9, etc.
+END TRY
+BEGIN CATCH
+    PRINT N'⚠️ Unable to query sys.servers for linked servers (permissions?).';
+END CATCH;
+
+-- =========================================================
+-- 2) SQL Agent jobs with Analysis Services subsystems
+--    ANALYSISCOMMAND (XMLA/DDL) / ANALYSISQUERY (MDX/DMX)
+-- =========================================================
+BEGIN TRY
+    IF DB_ID(N'msdb') IS NOT NULL
+    BEGIN
+        INSERT INTO #AgentJobs (JobName, StepName, Subsystem)
+        SELECT j.name, s.step_name, s.subsystem
+        FROM msdb.dbo.sysjobsteps AS s
+        JOIN msdb.dbo.sysjobs AS j
+          ON j.job_id = s.job_id
+        WHERE s.subsystem IN (N'ANALYSISCOMMAND', N'ANALYSISQUERY');
+    END
+END TRY
+BEGIN CATCH
+    PRINT N'⚠️ Unable to query msdb SQL Agent metadata (permissions?).';
+END CATCH;
+
+-- =========================================================
+-- 3) SSIS packages (legacy MSDB store) referencing SSAS
+--    Look for 'AnalysisServices' or 'MSOLAP' in package XML
+-- =========================================================
+BEGIN TRY
+    IF OBJECT_ID(N'msdb.dbo.sysssispackages') IS NOT NULL
+    BEGIN
+        INSERT INTO #SSIS_MSDB (FolderName, PackageName, Location)
+        SELECT f.foldername, p.name, N'MSDB'
+        FROM msdb.dbo.sysssispackages AS p
+        JOIN msdb.dbo.sysssispackagefolders AS f
+          ON p.folderid = f.folderid
+        WHERE TRY_CONVERT(xml, CAST(p.packagedata AS varbinary(max))) IS NOT NULL
+          AND (
+                CONVERT(nvarchar(max), TRY_CONVERT(xml, CAST(p.packagedata AS varbinary(max)))) LIKE N'%AnalysisServices%'
+             OR CONVERT(nvarchar(max), TRY_CONVERT(xml, CAST(p.packagedata AS varbinary(max)))) LIKE N'%MSOLAP%'
+          );
+    END
+END TRY
+BEGIN CATCH
+    PRINT N'⚠️ Unable to scan MSDB-stored SSIS packages (permissions or SSIS not installed).';
+END CATCH;
+
+-- =========================================================
+-- 4) SSIS packages (SSISDB project deployment) referencing SSAS
+--    AG-aware: Only scan if SSISDB is ONLINE here (primary or readable secondary)
+-- =========================================================
+DECLARE 
+    @hasSSISDB bit           = CASE WHEN DB_ID(N'SSISDB') IS NOT NULL THEN 1 ELSE 0 END,
+    @ssisState sysname       = NULL,
+    @ssisReadOnly bit        = NULL,
+    @isPrimaryReplica bit    = NULL;
+
+IF @hasSSISDB = 1
+BEGIN
+    SELECT 
+        @ssisState   = d.state_desc,
+        @ssisReadOnly = d.is_read_only
+    FROM sys.databases AS d
+    WHERE d.name = N'SSISDB';
+
+    -- If HADR is enabled and SSISDB participates, this returns 1 (primary) or 0 (secondary).
+    -- If not in AG, it may return NULL; we treat NULL as "not in AG".
+    BEGIN TRY
+        SELECT @isPrimaryReplica = TRY_CONVERT(bit, sys.fn_hadr_is_primary_replica(N'SSISDB'));
+    END TRY
+    BEGIN CATCH
+        SET @isPrimaryReplica = NULL; -- function may not be available or AG not enabled
+    END CATCH;
+
+    IF @ssisState = N'ONLINE'
+    BEGIN
+        -- ONLINE covers both primary (read-write) and readable secondary (read-only).
+        BEGIN TRY
+            ;WITH pkg AS
+            (
+                SELECT
+                    f.name   AS FolderName,
+                    prj.name AS ProjectName,
+                    p.name   AS PackageName,
+                    p.package_data
+                FROM SSISDB.internal.packages AS p
+                JOIN SSISDB.internal.projects AS prj
+                  ON p.project_id = prj.project_id
+                JOIN SSISDB.internal.folders AS f
+                  ON prj.folder_id = f.folder_id
+            )
+            INSERT INTO #SSIS_SSISDB (FolderName, ProjectName, PackageName, Location)
+            SELECT
+                pkg.FolderName, pkg.ProjectName, pkg.PackageName, N'SSISDB'
+            FROM pkg
+            CROSS APPLY (SELECT TRY_CONVERT(xml, pkg.package_data) AS pkg_xml) AS x
+            WHERE x.pkg_xml IS NOT NULL
+              AND (
+                    CONVERT(nvarchar(max), x.pkg_xml) LIKE N'%AnalysisServices%'
+                 OR CONVERT(nvarchar(max), x.pkg_xml) LIKE N'%MSOLAP%'
+              );
+        END TRY
+        BEGIN CATCH
+            PRINT N'⚠️ Unable to scan SSISDB packages (permissions? role membership in SSISDB needed).';
+        END CATCH;
+    END
+    ELSE
+    BEGIN
+        PRINT N'ℹ️ SSISDB exists but is not ONLINE on this replica (state: ' + COALESCE(@ssisState, N'UNKNOWN') + N'). Skipping SSISDB scan.';
+    END
+END
+ELSE
+BEGIN
+    PRINT N'ℹ️ SSISDB database not present on this instance.';
+END
+
+-- =========================================================
+-- Detail outputs
+-- =========================================================
+IF EXISTS (SELECT 1 FROM #LinkedServers)
+BEGIN
+    PRINT N'🔗 SSAS Linked Servers (MSOLAP) found:';
+    SELECT name, provider, data_source, product
+    FROM #LinkedServers
+    ORDER BY name;
+END
+ELSE
+BEGIN
+    PRINT N'ℹ️ No MSOLAP linked servers found.';
+END
+
+IF EXISTS (SELECT 1 FROM #AgentJobs)
+BEGIN
+    PRINT N'🗓️ SQL Agent jobs with Analysis Services steps found:';
+    SELECT JobName, StepName, Subsystem
+    FROM #AgentJobs
+    ORDER BY JobName, StepName;
+END
+ELSE
+BEGIN
+    PRINT N'ℹ️ No SQL Agent jobs with Analysis Services steps found.';
+END
+IF EXISTS (SELECT 1 FROM #SSIS_MSDB)
+BEGIN
+    PRINT N'📦 SSIS (MSDB) packages referencing SSAS found:';
+    SELECT FolderName, PackageName, Location
+    FROM #SSIS_MSDB
+    ORDER BY FolderName, PackageName;
+END
+ELSE
+BEGIN
+    PRINT N'ℹ️ No SSIS (MSDB) packages referencing SSAS found.';
+END
+
+IF EXISTS (SELECT 1 FROM #SSIS_SSISDB)
+BEGIN
+    DECLARE @roleNote nvarchar(200) = N'';
+    IF @hasSSISDB = 1
+    BEGIN
+        IF @ssisReadOnly = 1 SET @roleNote = N' (readable secondary)';
+        ELSE IF @ssisReadOnly = 0 SET @roleNote = N' (primary replica)';
+    END
+
+    PRINT N'📦 SSIS (SSISDB) packages referencing SSAS found' + @roleNote + N':';
+    SELECT FolderName, ProjectName, PackageName, Location
+    FROM #SSIS_SSISDB
+    ORDER BY FolderName, ProjectName, PackageName;
+END
+ELSE
+BEGIN
+    PRINT N'ℹ️ No SSIS (SSISDB) packages referencing SSAS found (or SSISDB not readable here).';
+END
+
+-- =========================================================
+-- Summary
+-- =========================================================
+DECLARE 
+    @cntLinked   int = (SELECT COUNT(*) FROM #LinkedServers),
+    @cntJobs     int = (SELECT COUNT(*) FROM #AgentJobs),
+    @cntMSDB     int = (SELECT COUNT(*) FROM #SSIS_MSDB),
+    @cntSSISDB   int = (SELECT COUNT(*) FROM #SSIS_SSISDB);
+
+SELECT N'Linked Servers (MSOLAP)' AS [Check],
+       @cntLinked                 AS [Count],
+       CASE WHEN @cntLinked > 0 THEN N'Found' ELSE N'Not Found' END AS [Status]
+UNION ALL
+SELECT N'SQL Agent (ANALYSIS* steps)',
+       @cntJobs,
+       CASE WHEN @cntJobs > 0 THEN N'Found' ELSE N'Not Found' END
+UNION ALL
+SELECT N'SSIS (MSDB) packages -> SSAS',
+       @cntMSDB,
+       CASE WHEN @cntMSDB > 0 THEN N'Found' ELSE N'Not Found' END
+UNION ALL
+SELECT N'SSIS (SSISDB) packages -> SSAS',
+       @cntSSISDB,
+       CASE WHEN @cntSSISDB > 0 THEN N'Found' ELSE N'Not Found' END;
+
+-- Cleanup (optional)
+DROP TABLE IF EXISTS #LinkedServers;
+DROP TABLE IF EXISTS #AgentJobs;
+DROP TABLE IF EXISTS #SSIS_MSDB;
+DROP TABLE IF EXISTS #SSIS_SSISDB;
 
   ----------------------------------------------------------------
 -- KERBEROS CHECK
@@ -2459,7 +2731,6 @@ PRINT '--------------------------'
                              AND type like 'D'
                   ORDER BY database_name ,backup_start_date DESC
 --------------------------------------------------------------------------------------------
-
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
 
