@@ -1,7 +1,7 @@
 SET NOCOUNT ON
 --SQL Instance Report
---Written By Adrian Sleigh V1.00 20/8/18
---Version 23.10 revised code and tidy 26/08/25 remove stats check
+--Written By Adrian Sleigh V1.00 28/8/25
+--Version 23.20 revised version check and added SSRS service account find
 ----------------------------------------------------
 PRINT N'📊 Generating Report...';
 
@@ -13,66 +13,118 @@ SELECT
     CONVERT(VARCHAR, sqlserver_start_time, 120) --AS [Report Header]
 FROM 
     sys.dm_os_sys_info;
+-- ============================================================
+-- SQL Server Version Check with 2019 Baseline + Back-branch patch check
+-- ============================================================
+SET NOCOUNT ON;
 
---CHECK SQL VERSION---------------------------------
-DECLARE @CurrentVersion VARCHAR(20) = CAST(SERVERPROPERTY('ProductVersion') AS VARCHAR);
-DECLARE @MajorVersion INT = CAST(LEFT(@CurrentVersion, CHARINDEX('.', @CurrentVersion) - 1) AS INT);
-DECLARE @LatestVersion VARCHAR(20);
-DECLARE @VersionName VARCHAR(50);
+-- Current version info
+DECLARE @CurrentVersion NVARCHAR(50) = CONVERT(NVARCHAR(50), SERVERPROPERTY('ProductVersion'));
+DECLARE @MajorVersion   INT          = TRY_CONVERT(INT, LEFT(@CurrentVersion, CHARINDEX('.', @CurrentVersion + '.') - 1));
 
--- Set latest version based on major version
+DECLARE @VersionName   NVARCHAR(50);
+DECLARE @LatestVersion NVARCHAR(50); -- four-part version string per branch
 
+-- Map major versions to friendly names & latest known builds (Aug 2025)
 IF @MajorVersion = 16
 BEGIN
-    SET @LatestVersion = '16.0.4205.1'; -- SQL Server 2022 CU20 July 2025
-    SET @VersionName = 'SQL Server 2022';
+    SET @VersionName   = N'SQL Server 2022';
+    SET @LatestVersion = N'16.0.4210.1'; -- SQL Server 2022 CU20 (Aug 2025)
 END
-
 ELSE IF @MajorVersion = 15
 BEGIN
-    SET @LatestVersion = '15.0.4435.7'; -- SQL Server 2019 CU32 July 2025
-    SET @VersionName = 'SQL Server 2019';
+    SET @VersionName   = N'SQL Server 2019';
+    SET @LatestVersion = N'15.0.4435.7'; -- SQL Server 2019 CU32 (Aug 2025)
 END
-
 ELSE IF @MajorVersion = 14
 BEGIN
-    SET @LatestVersion = '14.0.3456.2'; -- SQL Server 2017 CU31
-    SET @VersionName = 'SQL Server 2017';
+    SET @VersionName   = N'SQL Server 2017';
+    SET @LatestVersion = N'14.0.3456.2'; -- SQL Server 2017 CU31
 END
 ELSE IF @MajorVersion = 13
 BEGIN
-    SET @LatestVersion = '13.0.6460.7'; -- SQL Server 2016 SP3 CU9
-    SET @VersionName = 'SQL Server 2016';
+    SET @VersionName   = N'SQL Server 2016';
+    SET @LatestVersion = N'13.0.7060.1'; -- SQL Server 2016 SP3
 END
 ELSE IF @MajorVersion = 12
 BEGIN
-    SET @LatestVersion = '12.0.6329.1'; -- SQL Server 2014 SP3 CU4
-    SET @VersionName = 'SQL Server 2014';
+    SET @VersionName   = N'SQL Server 2014';
+    SET @LatestVersion = N'12.0.6329.1'; -- SQL Server 2014 SP3 CU4
 END
 ELSE IF @MajorVersion = 11
 BEGIN
-    SET @LatestVersion = '11.0.7462.6'; -- SQL Server 2012 SP4 CU4
-    SET @VersionName = 'SQL Server 2012';
+    SET @VersionName   = N'SQL Server 2012';
+    SET @LatestVersion = N'11.0.7462.6'; -- SQL Server 2012 SP4 CU4
 END
 ELSE IF @MajorVersion = 10
 BEGIN
-    SET @LatestVersion = '10.50.6560.0'; -- SQL Server 2008 R2 SP3 GDR
-    SET @VersionName = 'SQL Server 2008 R2';
+    SET @VersionName   = N'SQL Server 2008 R2';
+    SET @LatestVersion = N'10.50.6560.0'; -- SQL Server 2008 R2 SP3 GDR
 END
 ELSE
 BEGIN
-    PRINT N'⚠️ POSSIBLE UNSUPPORTED VERSION: ' + @CurrentVersion;
+    PRINT N'⚠️ POSSIBLE UNSUPPORTED/UNKNOWN VERSION: ' + ISNULL(@CurrentVersion, N'(null)');
     RETURN;
 END
 
-PRINT 'Detected Version: ' + @VersionName;
-PRINT 'Current SQL Server Version: ' + @CurrentVersion;
-PRINT 'Latest Known Version August 2025: ' + @LatestVersion;
+-- Helper: numeric compare of four-part versions using PARSENAME
+DECLARE @cMaj INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@CurrentVersion, 4)), 0);
+DECLARE @cMin INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@CurrentVersion, 3)), 0);
+DECLARE @cBld INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@CurrentVersion, 2)), 0);
+DECLARE @cRev INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@CurrentVersion, 1)), 0);
 
-IF @CurrentVersion < @LatestVersion
-    PRINT N'⚠️ Update Required: Your ' + @VersionName + ' instance is not fully patched !';
+DECLARE @lMaj INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@LatestVersion, 4)), 0);
+DECLARE @lMin INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@LatestVersion, 3)), 0);
+DECLARE @lBld INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@LatestVersion, 2)), 0);
+DECLARE @lRev INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@LatestVersion, 1)), 0);
+
+DECLARE @BranchOutdated BIT =
+    CASE
+        WHEN @cMaj < @lMaj THEN 1
+        WHEN @cMaj > @lMaj THEN 0
+        WHEN @cMin < @lMin THEN 1
+        WHEN @cMin > @lMin THEN 0
+        WHEN @cBld < @lBld THEN 1
+        WHEN @cBld > @lBld THEN 0
+        WHEN @cRev < @lRev THEN 1
+        ELSE 0
+    END;
+
+-- Output base info
+PRINT N'Detected Version: ' + @VersionName;
+PRINT N'Current SQL Server Version: ' + @CurrentVersion;
+PRINT N'Latest Known Version (Aug 2025) for this branch: ' + @LatestVersion;
+
+-- ============================================
+-- Enforce baseline: SQL Server 2019 required
+-- ============================================
+IF @MajorVersion <> 15
+BEGIN
+    PRINT N'❗ Upgrade to SQL Server 2019 required (baseline policy). Detected: '
+        + @VersionName + N' (' + @CurrentVersion + N')';
+
+    -- Additionally evaluate patch status only when LOWER than 2019
+    IF @MajorVersion < 15
+    BEGIN
+        IF @BranchOutdated = 1
+            PRINT N'⚠️ Patch Required (Current Branch): Your ' + @VersionName
+                + N' instance is not fully patched. Target at least: ' + @LatestVersion + N'.';
+        ELSE
+            PRINT N'ℹ️ Current Branch Status: Your ' + @VersionName
+                + N' instance appears fully patched for its branch.';
+    END
+
+    RETURN; -- stop here; remove/modify if you want further actions
+END
+
+-- ============================================
+-- Only for SQL Server 2019: evaluate patch status
+-- ============================================
+IF @BranchOutdated = 1
+    PRINT N'⚠️ UPDATE REQUIRED: Your SQL Server 2019 instance is not fully patched. Target: ' + @LatestVersion + N'.';
 ELSE
-    PRINT N'✅ Up to Date: Your ' + @VersionName + ' instance is likely running the latest patch.';
+    PRINT N'✅ Up to Date: Your SQL Server 2019 instance appears to be on the latest patch.';
+GO
 -----------------------------------------------------------------
 --GET INSTANCE PROPERTIES
 SELECT 
@@ -84,10 +136,7 @@ SELECT
   SUBSTRING(CAST(SERVERPROPERTY('IsClustered') AS varchar(10)),1,10)AS IsClustered, 
   SUBSTRING(CAST(SERVERPROPERTY('IsFullTextInstalled')AS varchar(10)),1,10) AS IsFullTextInstalled 
   FROM SYS.DM_EXEC_CONNECTIONS WHERE SESSION_ID = @@SPID
-SELECT 
-    SUBSTRING (CAST(SERVERPROPERTY('ProductLevel' ) AS VARCHAR),1,10) AS [Product Level],               
-    SUBSTRING(CAST(SERVERPROPERTY('EngineEdition') AS VARCHAR),1,10) AS [Engine Edition],        
-    SUBSTRING(CAST(SERVERPROPERTY('ProductUpdateLevel') AS VARCHAR),1,16) AS [Update Level],     
+SELECT    
     SUBSTRING(CAST(SERVERPROPERTY('ProductUpdateReference') AS VARCHAR),1,16) AS [Update Ref],    
     SUBSTRING(CAST(SERVERPROPERTY('BuildClrVersion')  AS VARCHAR),1,16) AS[CLR Version],
     SUBSTRING(CAST(CONNECTIONPROPERTY('local_net_address') AS VARCHAR(16)),1,16) AS Server_net_address,
@@ -111,7 +160,7 @@ SELECT
 
 SET NOCOUNT ON
 --GET CPU SPEED
-PRINT 'CPU TYPE/SPEED'
+--PRINT 'CPU TYPE/SPEED'
 CREATE TABLE #Temp_cpu
 (
 Col1 VARCHAR(20),
@@ -1314,6 +1363,127 @@ INNER JOIN master.sys.master_files AS files
 WHERE files.type_desc = 'ROWS'
 
 ----------------------------------------------------
+/* ================================================================
+   Identify SSRS gMSA via ReportServer DB permissions
+   - Searches all ReportServer* DBs (excludes *TempDB)
+   - Looks for membership in RSExecRole and/or db_owner
+   - Returns only principals that look like gMSA (name ends with $)
+   - If none found, prints "SSRS likely using a system account"
+   Requirements: Typically sysadmin (or rights to read DB metadata)
+   ================================================================*/
+SET NOCOUNT ON;
+
+-- 1) Collect ReportServer DBs (exclude TempDBs)
+IF OBJECT_ID('tempdb..#RSDBs') IS NOT NULL DROP TABLE #RSDBs;
+CREATE TABLE #RSDBs (DBName SYSNAME PRIMARY KEY);
+
+INSERT INTO #RSDBs(DBName)
+SELECT name
+FROM sys.databases
+WHERE name LIKE N'ReportServer%' 
+  AND name NOT LIKE N'%TempDB'
+  AND state_desc = N'ONLINE';
+
+IF NOT EXISTS (SELECT 1 FROM #RSDBs)
+BEGIN
+    PRINT N'No ReportServer database found on this instance.';
+    RETURN;
+END
+
+-- 2) Holder for gMSA findings across all RS DBs
+IF OBJECT_ID('tempdb..#FoundGmsa') IS NOT NULL DROP TABLE #FoundGmsa;
+CREATE TABLE #FoundGmsa
+(
+    DBName        SYSNAME         NOT NULL,
+    GmsaAccount   NVARCHAR(512)   NOT NULL,
+    RoleName      SYSNAME         NOT NULL,
+    PrincipalType NVARCHAR(128)   NULL
+);
+
+-- 3) Iterate RS DBs and pull role membership; filter to gMSA (ends with $)
+DECLARE @db SYSNAME, @sql NVARCHAR(MAX);
+
+DECLARE dbs CURSOR LOCAL FAST_FORWARD FOR
+    SELECT DBName FROM #RSDBs
+    ORDER BY CASE WHEN DBName = N'ReportServer' THEN 0 ELSE 1 END, DBName;
+
+OPEN dbs;
+FETCH NEXT FROM dbs INTO @db;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @sql = N'
+USE ' + QUOTENAME(@db) + N';
+;WITH RoleMembers AS
+(
+    SELECT 
+        dp.name           AS DatabaseUser,
+        dp.type_desc      AS DbPrincipalType,
+        dp.sid            AS DbSid,
+        rl.name           AS RoleName
+    FROM sys.database_principals AS dp
+    JOIN sys.database_role_members AS drm
+      ON dp.principal_id = drm.member_principal_id
+    JOIN sys.database_principals AS rl
+      ON rl.principal_id = drm.role_principal_id
+    WHERE rl.name IN (N''RSExecRole'', N''db_owner'')
+      AND dp.name <> N''dbo'' -- exclude dbo alias
+),
+Mapped AS
+(
+    SELECT 
+        rm.DatabaseUser,
+        rm.RoleName,
+        -- Collate both sides to the database default collation
+        COALESCE(
+            sp.name COLLATE DATABASE_DEFAULT,
+            rm.DatabaseUser COLLATE DATABASE_DEFAULT
+        ) AS PrincipalName,
+        COALESCE(sp.type_desc, rm.DbPrincipalType) AS PrincipalType
+    FROM RoleMembers rm
+    LEFT JOIN sys.server_principals sp
+      ON sp.sid = rm.DbSid
+     AND rm.DbSid IS NOT NULL
+     AND rm.DbSid <> 0x00
+)
+SELECT
+    DB_NAME()       AS DBName,
+    M.PrincipalName AS GmsaAccount,
+    M.RoleName      AS RoleName,
+    M.PrincipalType AS PrincipalType
+FROM Mapped AS M
+WHERE M.PrincipalName LIKE N''%$''; -- gMSA pattern (DOMAIN\name$)
+';
+    INSERT INTO #FoundGmsa (DBName, GmsaAccount, RoleName, PrincipalType)
+    EXEC (@sql);
+
+    FETCH NEXT FROM dbs INTO @db;
+END
+
+CLOSE dbs;
+DEALLOCATE dbs;
+
+-- 4) Output gMSA or print system-account hint
+IF EXISTS (SELECT 1 FROM #FoundGmsa)
+BEGIN
+PRINT N'ℹ️ SSRS ACCOUNT'
+    SELECT DISTINCT 
+        SUBSTRING(DBName,1,50)AS DbName,
+        SUBSTRING(GmsaAccount,1,20)  AS SSRS_gMSA_Account,
+        SUBSTRING(RoleName,1,20) AS RoleName,
+        SUBSTRING(PrincipalType,1,20) AS PrincipalType
+    FROM #FoundGmsa
+    ORDER BY DBName, RoleName, SSRS_gMSA_Account, PrincipalType;
+END
+ELSE
+BEGIN
+    PRINT N'SSRS likely using a system account (no gMSA found in RSExecRole/db_owner).';
+END
+
+-- Cleanup (optional)
+DROP TABLE IF EXISTS #FoundGmsa;
+DROP TABLE IF EXISTS #RSDBs;
+
 ----GET LIST ALL JOBS
 PRINT'SQL AGENT JOB LIST'
 PRINT'------------------'
@@ -2292,6 +2462,5 @@ PRINT '--------------------------'
 
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
-
 
 
