@@ -1,8 +1,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 28/08/25
---Version 23.30 revised version check added SSRS service account find added SSAS connection find
+--Written By Adrian Sleigh 08/09/25
+--Version 24.0 Added .NET check
 ----------------------------------------------------
 PRINT N'📊 Generating Report...';
 
@@ -17,6 +17,7 @@ FROM
 -- ============================================================
 -- SQL Server Version Check with 2019 Baseline + Back-branch patch check
 -- ============================================================
+
 SET NOCOUNT ON;
 
 -- Current version info
@@ -127,6 +128,47 @@ ELSE
     PRINT N'✅ Up to Date: Your SQL Server 2019 instance appears to be on the latest patch.';
 GO
 -----------------------------------------------------------------
+---Get .NET VERSION 08/09/25
+PRINT '.NET VERSION'
+PRINT '------------'
+SET NOCOUNT ON
+DECLARE @Release INT;
+
+-- Primary (64‑bit) registry view
+EXEC master..xp_regread
+    @rootkey    = N'HKEY_LOCAL_MACHINE',
+    @key        = N'SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full',
+    @value_name = N'Release',
+    @value      = @Release OUTPUT;
+
+-- Fallback to 32‑bit view if needed
+IF @Release IS NULL
+BEGIN
+    EXEC master..xp_regread
+        @rootkey    = N'HKEY_LOCAL_MACHINE',
+        @key        = N'SOFTWARE\Wow6432Node\Microsoft\NET Framework Setup\NDP\v4\Full',
+        @value_name = N'Release',
+        @value      = @Release OUTPUT;
+END
+
+SELECT 
+    @Release AS ReleaseValue,
+    CASE 
+        WHEN @Release IS NULL        THEN 'No 4.5 or later detected'
+        WHEN @Release >= 533320      THEN '.NET Framework 4.8.1 or later'
+        WHEN @Release >= 528040      THEN '.NET Framework 4.8'
+        WHEN @Release >= 461808      THEN '.NET Framework 4.7.2'
+        WHEN @Release >= 461308      THEN '.NET Framework 4.7.1'
+        WHEN @Release >= 460798      THEN '.NET Framework 4.7'
+        WHEN @Release >= 394802      THEN '.NET Framework 4.6.2'
+        WHEN @Release >= 394254      THEN '.NET Framework 4.6.1'
+        WHEN @Release >= 393295      THEN '.NET Framework 4.6'
+        WHEN @Release >= 379893      THEN '.NET Framework 4.5.2'
+        WHEN @Release >= 378675      THEN '.NET Framework 4.5.1'
+        WHEN @Release >= 378389      THEN '.NET Framework 4.5'
+        ELSE 'Version not recognized'
+    END AS DotNetVersion;
+--------------------------------------------------------------
 --GET INSTANCE PROPERTIES
 SELECT 
   SUBSTRING(SUSER_SNAME(),1,20)AS RanBy, 
@@ -2733,5 +2775,7 @@ PRINT '--------------------------'
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
+
+
 
 
