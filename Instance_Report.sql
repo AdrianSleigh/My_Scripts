@@ -2607,38 +2607,9 @@ FROM #orphaned_users;
 DROP TABLE #db_roles;
 DROP TABLE #orphaned_users;
 
-------------------------------------------------------------------
+---------------------------------------------------
 --Databases with wrong owner found
 ---------------------------------------------------
-DECLARE @Results TABLE (
-    DatabaseName NVARCHAR(128),
-    Owner NVARCHAR(128)
-);
-
-INSERT INTO @Results (DatabaseName, Owner)
-SELECT 
-   SUBSTRING(name, 1, 50) AS DatabaseName,
-   SUBSTRING(SUSER_SNAME(owner_sid), 1, 30) AS Owner
-FROM sys.databases
-
-WHERE state_desc = 'ONLINE'
-  AND database_id > 4  -- Exclude system databases
-  AND SUSER_SNAME(owner_sid) IS NOT NULL
-  AND UPPER(SUSER_SNAME(owner_sid)) <> 'SA'
-    AND UPPER(SUSER_SNAME(owner_sid)) <> 'moxireader';
-
-IF EXISTS (SELECT 1 FROM @Results)
-BEGIN
-    PRINT N'⚠️ DATABASES FOUND WITH WRONG OWNER';
---   SELECT * FROM @Results;
-SELECT SUBSTRING(DatabaseName,1,50)AS DatabaseName,
-       SUBSTRING(Owner,1,20) AS OrphanedUser
-FROM @Results
-
-END
-
-  -----------------------------------------------------------------
-  -- Check for non-system databases with non-SA owners
 SET NOCOUNT ON;
 
 DECLARE @Results1 TABLE (
@@ -2784,6 +2755,11 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
+
+
+
+
+
 
 
 
