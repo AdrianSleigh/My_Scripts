@@ -1,0 +1,51 @@
+-- Comprehensive UI Icon Cheat Sheet with Unicode Icons
+SELECT N'💾' AS Icon, N'Save' AS Icon_Name, N'Used to save changes or files' AS Description
+UNION ALL SELECT N'✏️' AS Icon, N'Edit' AS Icon_Name, N'Used to modify content' AS Description
+UNION ALL SELECT N'🗑️' AS Icon, N'Delete' AS Icon_Name, N'Used to remove items' AS Description
+UNION ALL SELECT N'🔍' AS Icon, N'Search' AS Icon_Name, N'Used to find content' AS Description
+UNION ALL SELECT N'⚙️' AS Icon, N'Settings' AS Icon_Name, N'Used to configure preferences' AS Description
+UNION ALL SELECT N'📤' AS Icon, N'Upload' AS Icon_Name, N'Used to send files to a server' AS Description
+UNION ALL SELECT N'📥' AS Icon, N'Download' AS Icon_Name, N'Used to retrieve files from a server' AS Description
+UNION ALL SELECT N'🏠' AS Icon, N'Home' AS Icon_Name, N'Used to navigate to the main page' AS Description
+UNION ALL SELECT N'🔄' AS Icon, N'Refresh' AS Icon_Name, N'Used to reload content' AS Description
+UNION ALL SELECT N'❓' AS Icon, N'Help' AS Icon_Name, N'Used to access support or documentation' AS Description
+UNION ALL SELECT N'🔒' AS Icon, N'Lock' AS Icon_Name, N'Used to secure or restrict access' AS Description
+UNION ALL SELECT N'🔓' AS Icon, N'Unlock' AS Icon_Name, N'Used to allow access' AS Description
+UNION ALL SELECT N'📅' AS Icon, N'Calendar' AS Icon_Name, N'Used to view or select dates' AS Description
+UNION ALL SELECT N'📊' AS Icon, N'Report' AS Icon_Name, N'Used to view analytics or summaries' AS Description
+UNION ALL SELECT N'🔔' AS Icon, N'Notification' AS Icon_Name, N'Used to alert users' AS Description
+UNION ALL SELECT N'📎' AS Icon, N'Attach' AS Icon_Name, N'Used to add files or links' AS Description
+UNION ALL SELECT N'🖨️' AS Icon, N'Print' AS Icon_Name, N'Used to print documents' AS Description
+UNION ALL SELECT N'🔗' AS Icon, N'Link' AS Icon_Name, N'Used to connect or reference' AS Description
+UNION ALL SELECT N'🚫' AS Icon, N'Block' AS Icon_Name, N'Used to deny or restrict actions' AS Description
+UNION ALL SELECT N'✅' AS Icon, N'Confirm' AS Icon_Name, N'Used to approve or validate actions' AS Description
+UNION ALL SELECT N'➕' AS Icon, N'Add' AS Icon_Name, N'Used to insert new items' AS Description
+UNION ALL SELECT N'➖' AS Icon, N'Remove' AS Icon_Name, N'Used to subtract or delete' AS Description
+UNION ALL SELECT N'📁' AS Icon, N'Folder' AS Icon_Name, N'Used to represent a directory' AS Description
+UNION ALL SELECT N'📂' AS Icon, N'Open Folder' AS Icon_Name, N'Used to open a directory' AS Description
+UNION ALL SELECT N'📄' AS Icon, N'Document' AS Icon_Name, N'Used to represent a file' AS Description
+UNION ALL SELECT N'🔙' AS Icon, N'Back' AS Icon_Name, N'Used to navigate to the previous page' AS Description
+UNION ALL SELECT N'🔜' AS Icon, N'Forward' AS Icon_Name, N'Used to navigate to the next page' AS Description
+UNION ALL SELECT N'🔼' AS Icon, N'Up' AS Icon_Name, N'Used to move upward' AS Description
+UNION ALL SELECT N'🔽' AS Icon, N'Down' AS Icon_Name, N'Used to move downward' AS Description
+UNION ALL SELECT N'🔧' AS Icon, N'Tool' AS Icon_Name, N'Used to access utilities or tools' AS Description
+UNION ALL SELECT N'🛠️' AS Icon, N'Maintenance' AS Icon_Name, N'Used for system maintenance' AS Description
+UNION ALL SELECT N'📡' AS Icon, N'Signal' AS Icon_Name, N'Used to indicate connectivity' AS Description
+UNION ALL SELECT N'📶' AS Icon, N'Network' AS Icon_Name, N'Used to show network strength' AS Description
+UNION ALL SELECT N'🔋' AS Icon, N'Battery' AS Icon_Name, N'Used to show power level' AS Description
+UNION ALL SELECT N'💡' AS Icon, N'Idea' AS Icon_Name, N'Used to represent a suggestion or tip' AS Description
+UNION ALL SELECT N'🧭' AS Icon, N'Compass' AS Icon_Name, N'Used for navigation' AS Description
+UNION ALL SELECT N'🧾' AS Icon, N'Receipt' AS Icon_Name, N'Used to show transaction history' AS Description
+UNION ALL SELECT N'🗂️' AS Icon, N'Archive' AS Icon_Name, N'Used to store or categorize files' AS Description
+UNION ALL SELECT N'🧰' AS Icon, N'Toolkit' AS Icon_Name, N'Used to access developer tools' AS Description
+UNION ALL SELECT N'🛒' AS Icon, N'Cart' AS Icon_Name, N'Used for shopping or checkout' AS Description
+UNION ALL SELECT N'💬' AS Icon, N'Chat' AS Icon_Name, N'Used to initiate conversation' AS Description
+UNION ALL SELECT N'📞' AS Icon, N'Call' AS Icon_Name, N'Used to initiate a phone call' AS Description
+UNION ALL SELECT N'📧' AS Icon, N'Email' AS Icon_Name, N'Used to send or receive messages' AS Description
+UNION ALL SELECT N'🕒' AS Icon, N'Clock' AS Icon_Name, N'Used to show time or schedule' AS Description
+UNION ALL SELECT N'📌' AS Icon, N'Pin' AS Icon_Name, N'Used to mark or highlight items' AS Description
+UNION ALL SELECT N'🔖' AS Icon, N'Bookmark' AS Icon_Name, N'Used to save a reference' AS Description
+UNION ALL SELECT N'🧹' AS Icon, N'Clean' AS Icon_Name, N'Used to clear or reset' AS Description
+UNION ALL SELECT N'🔬' AS Icon, N'Inspect' AS Icon_Name, N'Used to analyze or debug' AS Description
+UNION ALL SELECT N'🧪' AS Icon, N'Test' AS Icon_Name, N'Used to run diagnostics or checks' AS Description
+UNION ALL SELECT N'🗃️' AS Icon, N'Database' AS Icon_Name, N'Used to represent structured data' AS Description
