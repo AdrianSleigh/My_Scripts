@@ -183,11 +183,11 @@ SELECT
   SUBSTRING(CAST(SERVERPROPERTY('IsFullTextInstalled')AS VARCHAR(10)),1,10) AS IsFullTextInstalled 
   FROM SYS.DM_EXEC_CONNECTIONS WHERE SESSION_ID = @@SPID
 SELECT    
-    SUBSTRING(CAST(SERVERPROPERTY('ProductUpdateReference') AS VARCHAR),1,16) AS [Update Ref],    
-    SUBSTRING(CAST(SERVERPROPERTY('BuildClrVersion')  AS VARCHAR),1,16) AS[CLR Version],
-    SUBSTRING(CAST(CONNECTIONPROPERTY('local_net_address') AS VARCHAR(16)),1,16) AS Server_net_address,
-    SUBSTRING(CAST(CONNECTIONPROPERTY('local_tcp_port')AS VARCHAR (10)),1,10) AS local_tcp_port,
-    SUBSTRING(CAST(CONNECTIONPROPERTY('client_net_address') AS VARCHAR(16)),1,16) AS myclient_net_address
+   SUBSTRING(CAST(SERVERPROPERTY('ProductUpdateReference') AS VARCHAR),1,16) AS [Update Ref],    
+   SUBSTRING(CAST(SERVERPROPERTY('BuildClrVersion')  AS VARCHAR),1,16) AS[CLR Version],
+   SUBSTRING(CAST(CONNECTIONPROPERTY('local_net_address') AS VARCHAR(16)),1,16) AS Server_net_address,
+   SUBSTRING(CAST(CONNECTIONPROPERTY('local_tcp_port')AS VARCHAR (10)),1,10) AS local_tcp_port,
+   SUBSTRING(CAST(CONNECTIONPROPERTY('client_net_address') AS VARCHAR(16)),1,16) AS myclient_net_address
 
   SELECT
   SUBSTRING(CAST(SERVERPROPERTY('InstanceDefaultDataPath')AS VARCHAR(50)),1,2) AS DefaultDatadrive, 
@@ -231,7 +231,7 @@ SELECT
           FROM sys.dm_os_sys_info
 
 ------------------------------------
----CHECK MEMORY SETTINGS 14/08/25
+---CHECK MEMORY SETTINGS 16/09/25 revised version
 ------------------------------------
 -- Declare variables
 DECLARE @TotalMemoryMB INT, @AvailableMemoryMB INT;
@@ -334,7 +334,7 @@ BEGIN
 END
 ELSE IF @MemoryDiffPercent < -10
 BEGIN
-    PRINT N'⚠️ SQL Server is using significantly less memory than recommended.';
+    PRINT N'⚠️ SQL Server is using less memory than recommended.';
     PRINT N'💡 Consider increasing max server memory to ' + CAST(@SuggestedMaxMemoryMB AS VARCHAR) + ' MB.';
 END
 ELSE
@@ -342,9 +342,11 @@ BEGIN
     PRINT N'✅ SQL Server memory configuration appears appropriate for this workload.';
 END
 PRINT 'Always leave at least 2GB for operating system. If SSRS or SSIS is installed leave additional memory for those external services'
+PRINT 'Example settings if BI Stack is being used..'
+PRINT '---------------------------------------------'
 PRINT 'SQL only          - leave 2GB for OS 6144MB 8GB-2G'
 PRINT 'SQL + SSRS        - leave 2GB for OS 5120MB +1 GB for SSRS'
-PRINT 'SQL + SSIS        - leave 2GB for OS 4096MB +2 GB for SSIS'
+PRINT 'SQL + SSIS        - leave 2GallB for OS 4096MB +2 GB for SSIS'
 PRINT 'SQL + SSRS + SSIS - leave 2GB for OS 3072MB +3GB for SSRS/SSIS'
 PRINT '--------------------------------------------------------------'
 -------------------------------------------------------------------------
@@ -2755,17 +2757,6 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
-
-
-
-
-
-
-
-
-
-
-
 
 
 
