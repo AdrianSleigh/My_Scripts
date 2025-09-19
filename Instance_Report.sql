@@ -1,8 +1,9 @@
+
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 16/09/25
---Version 25.0 Fixed SSISDB as secondary error, added time_taken in backups
+--Written By Adrian Sleigh 19/09/25
+--Version 26.0 Fixed SSRS as secondary error
 ---------------------------------------------------------------------------
 PRINT N'📊 Generating Report...';
 SELECT
@@ -115,8 +116,8 @@ BEGIN
             PRINT N'⚠️ Patch Required (Current Branch): Your ' + @VersionName
                 + N' instance is not fully patched. Target at least: ' + @LatestVersion + N'.';
         ELSE
-            PRINT N'ℹ️ Current Branch Status: Your ' + @VersionName
-                + N' instance appears fully patched for its branch.';
+            PRINT N' Current Branch Status: Your ' + @VersionName
+                + N' ✅ instance appears fully patched for its branch.';
     END
 
     RETURN; -- stop here; remove/modify if you want further actions
@@ -1404,6 +1405,17 @@ INNER JOIN master.sys.master_files AS files
 WHERE files.type_desc = 'ROWS'
 
 ----------------------------------------------------
+-- Check SSRS Account
+IF EXISTS (
+    SELECT 1
+    FROM sys.dm_hadr_availability_replica_states ars
+    JOIN sys.availability_replicas ar ON ars.replica_id = ar.replica_id
+    WHERE ars.role_desc = 'PRIMARY'
+      AND ar.replica_server_name = @@SERVERNAME
+)
+BEGIN
+    PRINT 'Running on PRIMARY. Proceeding with script...';
+
 /* ================================================================
    Identify SSRS gMSA via ReportServer DB permissions
    - Searches all ReportServer* DBs (excludes *TempDB)
@@ -1421,9 +1433,12 @@ CREATE TABLE #RSDBs (DBName SYSNAME PRIMARY KEY);
 INSERT INTO #RSDBs(DBName)
 SELECT name
 FROM sys.databases
+
+
+
 WHERE name LIKE N'ReportServer%' 
   AND name NOT LIKE N'%TempDB'
-  AND state_desc = N'ONLINE';
+  AND state_desc = N'ONLINE' ;
 
 IF NOT EXISTS (SELECT 1 FROM #RSDBs)
 BEGIN
@@ -1507,7 +1522,7 @@ DEALLOCATE dbs;
 -- 4) Output gMSA or print system-account hint
 IF EXISTS (SELECT 1 FROM #FoundGmsa)
 BEGIN
-PRINT N'ℹ️ SSRS ACCOUNT'
+PRINT N'SSRS ACCOUNT'
     SELECT DISTINCT 
         SUBSTRING(DBName,1,50)AS DbName,
         SUBSTRING(GmsaAccount,1,20)  AS SSRS_gMSA_Account,
@@ -1524,6 +1539,13 @@ END
 -- Cleanup (optional)
 DROP TABLE IF EXISTS #FoundGmsa;
 DROP TABLE IF EXISTS #RSDBs;
+
+END
+ELSE
+BEGIN
+    PRINT 'Script is running on the SECONDARY. Skipping ----.';
+END
+
 
 ----GET LIST ALL JOBS
 PRINT'SQL AGENT JOB LIST'
@@ -2039,99 +2061,114 @@ BEGIN CATCH
     PRINT '';
 END CATCH
      PRINT '-------------------------------'
-----------------------------------------------
 SET NOCOUNT ON;
-DECLARE @SSRSInstalled BIT = 0;
-DECLARE @SSRSDatabaseName NVARCHAR(128);
-DECLARE @sql5 NVARCHAR(MAX);
 
--- Check for SSRS-related databases
-SELECT TOP 1 @SSRSDatabaseName = name
-FROM master.dbo.sysdatabases
-WHERE name LIKE 'ReportServer%';
-
-IF @SSRSDatabaseName IS NOT NULL
+-- Check if current instance is PRIMARY
+IF EXISTS (
+    SELECT 1
+    FROM sys.dm_hadr_availability_replica_states ars
+    JOIN sys.availability_replicas ar ON ars.replica_id = ar.replica_id
+    WHERE ars.role_desc = 'PRIMARY'
+      AND ar.replica_server_name = @@SERVERNAME
+)
 BEGIN
-    SET @SSRSInstalled = 1;
-END
+    DECLARE @SSRSInstalled BIT = 0;
+    DECLARE @SSRSDatabaseName NVARCHAR(128);
+    DECLARE @sql5 NVARCHAR(MAX);
 
--- Conditional execution
-IF @SSRSInstalled = 1
-BEGIN
-    PRINT N'⚠️ REPORTING SERVER DATABASES FOUND: ' + @SSRSDatabaseName;
+    -- Check for SSRS-related databases
+    SELECT TOP 1 @SSRSDatabaseName = name
+    FROM master.dbo.sysdatabases
+    WHERE name LIKE 'ReportServer%';
 
-    SET @sql5 = '
-    SELECT
-        CASE CL.Type
-            WHEN 1 THEN ''Folder''
-            WHEN 2 THEN ''Report''
-            WHEN 3 THEN ''Resource''
-            WHEN 4 THEN ''Linked Report''
-            WHEN 5 THEN ''Data Source''
-        END                                 AS ObjectType,
-        SUBSTRING(CP.Name,1,20)             AS ParentName,
-        SUBSTRING(CL.Name,1,60)             AS Name,
-        SUBSTRING(CL.Path ,1,90)            AS Path,
-        SUBSTRING(CU.UserName,1,20)         AS CreatedBy,
-        CL.CreationDate                     AS CreationDate,
-        SUBSTRING(UM.UserName,1,20)         AS ModifiedBy,
-        CL.ModifiedDate                     AS ModifiedDate,
-        CE.CountStart                       AS TotalExecutions,
-        SUBSTRING(EL.InstanceName,1,20)     AS LastExecutedInstanceName,
-        SUBSTRING(EL.UserName,1,20)         AS LastExecuter,
-        EL.Format                           AS LastFormat,
-        EL.TimeStart                        AS LastTimeStarted,
-        EL.TimeEnd                          AS LastTimeEnded,
-        EL.TimeDataRetrieval                AS LastTimeDataRetrieval,
-        EL.TimeProcessing                   AS LastTimeProcessing,
-        EL.TimeRendering                    AS LastTimeRendering,
-        SUBSTRING(EL.Status,1,10)           AS LastResult,
-        EL.ByteCount                        AS LastByteCount,
-        EL.[RowCount]                       AS LastRowCount,
-        SUBSTRING(SO.UserName,1,20)         AS SubscriptionOwner,
-        SUBSTRING(SU.UserName,1,20)         AS SubscriptionModifiedBy,
-        SS.ModifiedDate                     AS SubscriptionModifiedDate,
-        SUBSTRING(SS.Description,1,30)      AS SubscriptionDescription,
-        SUBSTRING(SS.LastStatus,1,10)       AS SubscriptionLastResult,
-        SS.LastRunTime                      AS SubscriptionLastRunTime
-    FROM [' + @SSRSDatabaseName + '].dbo.Catalog CL
-    JOIN [' + @SSRSDatabaseName + '].dbo.Catalog CP
-        ON CP.ItemID = CL.ParentID
-    JOIN [' + @SSRSDatabaseName + '].dbo.Users CU
-        ON CU.UserID = CL.CreatedByID
-    JOIN [' + @SSRSDatabaseName + '].dbo.Users UM
-        ON UM.UserID = CL.ModifiedByID
-    LEFT JOIN ( SELECT
-                    ReportID,
-                    MAX(TimeStart) LastTimeStart
-                FROM [' + @SSRSDatabaseName + '].dbo.ExecutionLog
-                GROUP BY ReportID) LE
-        ON LE.ReportID = CL.ItemID
-    LEFT JOIN ( SELECT
-                    ReportID,
-                    COUNT(TimeStart) CountStart
-                FROM [' + @SSRSDatabaseName + '].dbo.ExecutionLog
-                GROUP BY ReportID) CE
-        ON CE.ReportID = CL.ItemID
-    LEFT JOIN [' + @SSRSDatabaseName + '].dbo.ExecutionLog EL
-        ON EL.ReportID = LE.ReportID
-        AND EL.TimeStart = LE.LastTimeStart
-    LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Subscriptions SS
-        ON SS.Report_OID = CL.ItemID
-    LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Users SO
-        ON SO.UserID = SS.OwnerID
-    LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Users SU
-        ON SU.UserID = SS.ModifiedByID
-    WHERE 1 = 1
-    ORDER BY CP.Name, CL.Name ASC;
-    ';
+    IF @SSRSDatabaseName IS NOT NULL
+    BEGIN
+        SET @SSRSInstalled = 1;
+    END
 
-    EXEC sp_executesql @sql5;
+    -- Conditional execution
+    IF @SSRSInstalled = 1
+    BEGIN
+        PRINT N'⚠️ REPORTING SERVER DATABASES FOUND: ' + @SSRSDatabaseName;
+
+        SET @sql5 = '
+        SELECT
+            CASE CL.Type
+                WHEN 1 THEN ''Folder''
+                WHEN 2 THEN ''Report''
+                WHEN 3 THEN ''Resource''
+                WHEN 4 THEN ''Linked Report''
+                WHEN 5 THEN ''Data Source''
+            END                                 AS ObjectType,
+            SUBSTRING(CP.Name,1,20)             AS ParentName,
+            SUBSTRING(CL.Name,1,60)             AS Name,
+            SUBSTRING(CL.Path ,1,90)            AS Path,
+            SUBSTRING(CU.UserName,1,20)         AS CreatedBy,
+            CL.CreationDate                     AS CreationDate,
+            SUBSTRING(UM.UserName,1,20)         AS ModifiedBy,
+            CL.ModifiedDate                     AS ModifiedDate,
+            CE.CountStart                       AS TotalExecutions,
+            SUBSTRING(EL.InstanceName,1,20)     AS LastExecutedInstanceName,
+            SUBSTRING(EL.UserName,1,20)         AS LastExecuter,
+            EL.Format                           AS LastFormat,
+            EL.TimeStart                        AS LastTimeStarted,
+            EL.TimeEnd                          AS LastTimeEnded,
+            EL.TimeDataRetrieval                AS LastTimeDataRetrieval,
+            EL.TimeProcessing                   AS LastTimeProcessing,
+            EL.TimeRendering                    AS LastTimeRendering,
+            SUBSTRING(EL.Status,1,10)           AS LastResult,
+            EL.ByteCount                        AS LastByteCount,
+            EL.[RowCount]                       AS LastRowCount,
+            SUBSTRING(SO.UserName,1,20)         AS SubscriptionOwner,
+            SUBSTRING(SU.UserName,1,20)         AS SubscriptionModifiedBy,
+            SS.ModifiedDate                     AS SubscriptionModifiedDate,
+            SUBSTRING(SS.Description,1,30)      AS SubscriptionDescription,
+            SUBSTRING(SS.LastStatus,1,10)       AS SubscriptionLastResult,
+            SS.LastRunTime                      AS SubscriptionLastRunTime
+        FROM [' + @SSRSDatabaseName + '].dbo.Catalog CL
+        JOIN [' + @SSRSDatabaseName + '].dbo.Catalog CP
+            ON CP.ItemID = CL.ParentID
+        JOIN [' + @SSRSDatabaseName + '].dbo.Users CU
+            ON CU.UserID = CL.CreatedByID
+        JOIN [' + @SSRSDatabaseName + '].dbo.Users UM
+            ON UM.UserID = CL.ModifiedByID
+        LEFT JOIN ( SELECT
+                        ReportID,
+                        MAX(TimeStart) LastTimeStart
+                    FROM [' + @SSRSDatabaseName + '].dbo.ExecutionLog
+                    GROUP BY ReportID) LE
+            ON LE.ReportID = CL.ItemID
+        LEFT JOIN ( SELECT
+                        ReportID,
+                        COUNT(TimeStart) CountStart
+                    FROM [' + @SSRSDatabaseName + '].dbo.ExecutionLog
+                    GROUP BY ReportID) CE
+            ON CE.ReportID = CL.ItemID
+        LEFT JOIN [' + @SSRSDatabaseName + '].dbo.ExecutionLog EL
+            ON EL.ReportID = LE.ReportID
+            AND EL.TimeStart = LE.LastTimeStart
+        LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Subscriptions SS
+            ON SS.Report_OID = CL.ItemID
+        LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Users SO
+            ON SO.UserID = SS.OwnerID
+        LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Users SU
+            ON SU.UserID = SS.ModifiedByID
+        WHERE 1 = 1
+        ORDER BY CP.Name, CL.Name ASC;
+        ';
+
+        EXEC sp_executesql @sql5;
+    END
+    ELSE
+    BEGIN
+        PRINT N'✅ NO SSRS DATABASE FOUND. Skipping report analysis.';
+    END
 END
 ELSE
 BEGIN
-    PRINT N'✅ NO SSRS DATABASE FOUND. Skipping report analysis.';
+    PRINT N'⛔ SSRS is on a SECONDARY replica. Skipping SSRS analysis.';
 END
+
 ------------------------------------------------------------------
 /* =====================================================================
    Detect whether SSAS is being used from the SQL Server Database Engine
@@ -2190,7 +2227,7 @@ CREATE TABLE #SSIS_SSISDB
 
 -- Optional: avoid blocking when scanning metadata
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-PRINT N'ℹ️ CHECKING FOR SSAS CONNECTIVITY....'
+PRINT N'CHECKING FOR SSAS CONNECTIVITY....'
 -- =========================================================
 -- 1) Linked servers using MSOLAP (SSAS OLE DB provider)
 -- =========================================================
@@ -2310,12 +2347,12 @@ BEGIN
     END
     ELSE
     BEGIN
-        PRINT N'ℹ️ SSISDB exists but is not ONLINE on this replica (state: ' + COALESCE(@ssisState, N'UNKNOWN') + N'). Skipping SSISDB scan.';
+        PRINT N'⚠️ SSISDB exists but is not ONLINE on this replica (state: ' + COALESCE(@ssisState, N'UNKNOWN') + N'). Skipping SSISDB scan.';
     END
 END
 ELSE
 BEGIN
-    PRINT N'ℹ️ SSISDB database not present on this instance.';
+    PRINT N'⚠️ SSISDB database not present on this instance.';
 END
 
 -- =========================================================
@@ -2330,7 +2367,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'ℹ️ No MSOLAP linked servers found.';
+    PRINT N'⚠️ No MSOLAP linked servers found.';
 END
 
 IF EXISTS (SELECT 1 FROM #AgentJobs)
@@ -2342,7 +2379,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'ℹ️ No SQL Agent jobs with Analysis Services steps found.';
+    PRINT N'⚠️ No SQL Agent jobs with Analysis Services steps found.';
 END
 IF EXISTS (SELECT 1 FROM #SSIS_MSDB)
 BEGIN
@@ -2353,7 +2390,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'ℹ️ No SSIS (MSDB) packages referencing SSAS found.';
+    PRINT N'⚠️ No SSIS (MSDB) packages referencing SSAS found.';
 END
 
 IF EXISTS (SELECT 1 FROM #SSIS_SSISDB)
@@ -2372,7 +2409,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'ℹ️ No SSIS (SSISDB) packages referencing SSAS found (or SSISDB not readable here).';
+    PRINT N'⚠️ No SSIS (SSISDB) packages referencing SSAS found (or SSISDB not readable here).';
 END
 
 -- =========================================================
@@ -2757,6 +2794,5 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
-
 
 
