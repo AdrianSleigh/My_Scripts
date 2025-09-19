@@ -170,7 +170,7 @@ SELECT
         WHEN @Release >= 379893      THEN '.NET Framework 4.5.2'
         WHEN @Release >= 378675      THEN '.NET Framework 4.5.1'
         WHEN @Release >= 378389      THEN '.NET Framework 4.5'
-        ELSE 'Version not recognized'
+        ELSE ' ⛔ Version not recognized'
     END AS DotNetVersion;
 --------------------------------------------------------------
 --GET INSTANCE PROPERTIES
@@ -399,7 +399,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO PROXY ACCOUNTS PRESENT';
+    PRINT N'⛔ NO PROXY ACCOUNTS PRESENT';
               PRINT '-------------------------'
 END
 
@@ -961,7 +961,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO OLA HALLENGREN SCRIPTS PRESENT IN ANY DATABASE.';
+    PRINT N'⛔ NO OLA HALLENGREN SCRIPTS PRESENT IN ANY DATABASE.';
 END
 --------------------------------------------------------------------------
 --GET REPLICATION ROLE
@@ -1024,7 +1024,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NOT A CLUSTERED INSTANCE';
+    PRINT N'⛔ NOT A CLUSTERED INSTANCE';
 END
 ---------------------------------------------------
 --GET AVAILABILITY GROUP INFO
@@ -1057,7 +1057,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO ALWAYS ON AVAILABILITY GROUP PRESENT';
+    PRINT N'⛔ NO ALWAYS ON AVAILABILITY GROUP PRESENT';
 END
 ----------------------------------------------------
 ---GET MIRRORED DATABASES
@@ -1084,7 +1084,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO MIRRORED DATABASES PRESENT';
+    PRINT N'⛔ NO MIRRORED DATABASES PRESENT';
 END
 --------------------------------------------------
 --GET LOGSHIPPED DATABASES
@@ -1120,7 +1120,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO LOG SHIPPING CONFIGURED';
+    PRINT N'⛔ NO LOG SHIPPING CONFIGURED';
 END
 
 --------------------------------------------------
@@ -1158,7 +1158,7 @@ BEGIN
     END
     ELSE
     BEGIN
-        PRINT N'POLYBASE IS NOT INSTALLED.';
+        PRINT N'⛔ POLYBASE IS NOT INSTALLED.';
     END
 END
 -----------------------------------------------------
@@ -1231,7 +1231,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO POLICY-BASED MANAGEMENT CONFIGURED';
+    PRINT N'⛔ NO POLICY-BASED MANAGEMENT CONFIGURED';
 END
 GO
 
@@ -1442,7 +1442,7 @@ WHERE name LIKE N'ReportServer%'
 
 IF NOT EXISTS (SELECT 1 FROM #RSDBs)
 BEGIN
-    PRINT N'No ReportServer database found on this instance.';
+    PRINT N'⛔ No ReportServer database found on this instance.';
     RETURN;
 END
 
@@ -1596,7 +1596,6 @@ BEGIN
 END
 
 --GET LIST ALL SSIS PACKAGES
---GET LIST ALL SSIS PACKAGES
 
 PRINT '----------------------'
 
@@ -1641,7 +1640,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO SSIS PACKAGES PRESENT';
+    PRINT N'⛔ NO SSIS PACKAGES PRESENT';
 END
 ------------------------------------------------------------
 --- 'SSIS PACKAGES IN SSISDB '
@@ -1690,7 +1689,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'NO SSIS PACKAGES IN MSDB';
+    PRINT N'⛔ NO SSIS PACKAGES IN MSDB';
 END
 GO
 -----------------------------------------------
@@ -1730,7 +1729,7 @@ BEGIN
             IF @enabled = 1
                 PRINT 'SSIS SCALE OUT DEPLOYED';
             ELSE
-                PRINT 'NO SSIS SCALE OUT DEPLOYED';
+                PRINT N'⛔ NO SSIS SCALE OUT DEPLOYED';
         END TRY
         BEGIN CATCH
             PRINT '⚠️ Error accessing SSISDB catalog properties';
@@ -1743,7 +1742,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT 'SSISDB not found';
+    PRINT N'⛔ SSISDB not found';
 END
 
 PRINT '---------------------------';
@@ -2054,7 +2053,7 @@ BEGIN TRY
     END
     ELSE
     BEGIN
-        PRINT 'NO SSRS DATABASES DISCOVERED';
+        PRINT N'⛔ NO SSRS DATABASES DISCOVERED';
     END
 END TRY
 BEGIN CATCH
@@ -2161,7 +2160,7 @@ BEGIN
     END
     ELSE
     BEGIN
-        PRINT N'✅ NO SSRS DATABASE FOUND. Skipping report analysis.';
+        PRINT N'⛔ NO SSRS DATABASE FOUND. Skipping report analysis.';
     END
 END
 ELSE
@@ -2352,7 +2351,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'⚠️ SSISDB database not present on this instance.';
+    PRINT N'⛔ SSISDB database not present on this instance.';
 END
 
 -- =========================================================
@@ -2367,7 +2366,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'⚠️ No MSOLAP linked servers found.';
+    PRINT N'⛔ No MSOLAP linked servers found.';
 END
 
 IF EXISTS (SELECT 1 FROM #AgentJobs)
@@ -2379,7 +2378,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'⚠️ No SQL Agent jobs with Analysis Services steps found.';
+    PRINT N'⛔ No SQL Agent jobs with Analysis Services steps found.';
 END
 IF EXISTS (SELECT 1 FROM #SSIS_MSDB)
 BEGIN
@@ -2390,7 +2389,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'⚠️ No SSIS (MSDB) packages referencing SSAS found.';
+    PRINT N'⛔ No SSIS (MSDB) packages referencing SSAS found.';
 END
 
 IF EXISTS (SELECT 1 FROM #SSIS_SSISDB)
@@ -2409,7 +2408,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'⚠️ No SSIS (SSISDB) packages referencing SSAS found (or SSISDB not readable here).';
+    PRINT N'⛔ No SSIS (SSISDB) packages referencing SSAS found (or SSISDB not readable here).';
 END
 
 -- =========================================================
