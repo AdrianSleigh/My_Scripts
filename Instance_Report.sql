@@ -2,8 +2,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 19/09/25
---Version 26.0 Fixed SSRS as secondary error
+--Written By Adrian Sleigh 22/09/25
+--Version 27.0 Fixed minor issues with tempdb sizes
 ---------------------------------------------------------------------------
 PRINT N'📊 Generating Report...';
 SELECT
@@ -106,7 +106,7 @@ PRINT N'Latest Known Version (Aug 2025) for this branch: ' + @LatestVersion;
 -- ============================================
 IF @MajorVersion <> 15
 BEGIN
-    PRINT N'❗ Upgrade to SQL Server 2019 required (baseline policy). Detected: '
+    PRINT N'⚠️ Upgrade to SQL Server 2019 required (baseline policy). Detected: '
         + @VersionName + N' (' + @CurrentVersion + N')';
 
     -- Additionally evaluate patch status only when LOWER than 2019
@@ -131,8 +131,9 @@ IF @BranchOutdated = 1
 ELSE
     PRINT N'✅ Up to Date: Your SQL Server 2019 instance appears to be on the latest patch.';
 GO
------------------------------------------------------------------
----Get .NET VERSION 08/09/25
+--------------------------------------------------------------
+---latest version 22/09/25
+------------------------------------------------------------------
 PRINT '.NET VERSION'
 PRINT '------------'
 SET NOCOUNT ON
@@ -154,7 +155,6 @@ BEGIN
         @value_name = N'Release',
         @value      = @Release OUTPUT;
 END
-
 SELECT 
     @Release AS ReleaseValue,
     CASE 
@@ -170,8 +170,15 @@ SELECT
         WHEN @Release >= 379893      THEN '.NET Framework 4.5.2'
         WHEN @Release >= 378675      THEN '.NET Framework 4.5.1'
         WHEN @Release >= 378389      THEN '.NET Framework 4.5'
-        ELSE ' ⛔ Version not recognized'
+        ELSE N' ⛔ Version not recognized'
     END AS DotNetVersion;
+   PRINT '---------------------------------------------------------------------'
+-- Print upgrade warning if version is below 4.7.2
+IF @Release IS NULL OR @Release < 461808
+
+    PRINT N'⛔ .NET Framework 4.7.2 or later is required. ❌ .NET NEEDS UPGRADE.'
+	ELSE PRINT N' ✅.NET Version is OK'
+	;
 --------------------------------------------------------------
 --GET INSTANCE PROPERTIES
 SELECT 
@@ -1162,8 +1169,7 @@ BEGIN
     END
 END
 -----------------------------------------------------
-
----CHECK TEMPDB FILES ARE CORRECT
+-- CHECK TEMPDB FILES ARE CORRECT
 USE tempdb;
 GO
 
@@ -1204,7 +1210,7 @@ FROM TempdbFiles;
 
 IF @HasError = 1
 BEGIN
-    RAISERROR(@ErrorMessage, 16, 1);
+    PRINT N'⛔ TEMPDB DATAFILE CONFIGURATION ISSUE: ' + @ErrorMessage;
 END
 ELSE
 BEGIN
@@ -2793,5 +2799,7 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
+
+
 
 
