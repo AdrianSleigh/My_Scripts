@@ -1,0 +1,125 @@
+--SSISDB checks Adrian Sleigh 23/09/25
+--------------------------------------
+-- 1. SQL Server version and edition
+SET NOCOUNT ON
+PRINT N'📊 Generating Report...';
+SELECT
+    'SSIS CHECKS-' + 
+    @@SERVERNAME + 
+    ' | Last SQL Restart: ' + 
+    CONVERT(VARCHAR, sqlserver_start_time, 120) + 
+    ' | UPTIME: ' + 
+    CAST(DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) / 86400 AS VARCHAR) + ' days, ' +
+    CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 86400) / 3600 AS VARCHAR) + ' hours, ' +
+    CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 3600) / 60 AS VARCHAR) + ' minutes'
+FROM 
+    sys.dm_os_sys_info;
+
+SELECT 
+    'SQL Version/Edition' AS [Check],
+    CAST(SERVERPROPERTY('ProductVersion')AS Varchar (12)) AS [Value],
+
+    CASE 
+        WHEN CAST(LEFT(CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128)), 2) AS FLOAT) >= 13 THEN N'✅ OK'
+        ELSE N'⚠️ WARNING: SQL Server 2016+ recommended for SSISDB in AG'
+    END AS [Status];
+
+-- 2. SSISDB state and recovery model
+SELECT 
+    'SSISDB State/Recovery Model' AS [Check],
+    SUBSTRING(state_desc + ', ' + recovery_model_desc,1,20) AS [Value],
+    CASE 
+        WHEN state_desc = 'ONLINE' AND recovery_model_desc = 'FULL' THEN N'✅ OK'
+        ELSE N'⚠️ WARNING: SSISDB must be ONLINE and in FULL recovery model'
+    END AS [Status]
+FROM sys.databases WHERE name = 'SSISDB';
+
+-- 3. SSISDB in Availability Group
+SELECT 
+    'SSISDB in AG' AS [Check],
+    SUBSTRING(ISNULL(ag.name, 'Not in AG'),1,20) AS [Value],
+    CASE 
+        WHEN ag.name IS NOT NULL THEN N'✅ OK'
+        ELSE N'⚠️ WARNING: SSISDB is not part of any Availability Group'
+    END AS [Status]
+FROM sys.databases d
+LEFT JOIN sys.dm_hadr_database_replica_states drs ON d.database_id = drs.database_id
+LEFT JOIN sys.availability_groups ag ON drs.group_id = ag.group_id
+WHERE d.name = 'SSISDB';
+
+-- 4. SSISDB master key exists
+USE SSISDB;
+SELECT 
+    'SSISDB Master Key' AS [Check],
+    CASE WHEN COUNT(*) > 0 THEN 'Exists' ELSE 'Missing' END AS [Value],
+    CASE WHEN COUNT(*) > 0 THEN 'OK' ELSE N'⚠️ WARNING: SSISDB master key missing' END AS [Status]
+FROM sys.symmetric_keys WHERE name = '##MS_DatabaseMasterKey##';
+
+-- 5. Recent full backup
+SELECT 
+    'SSISDB Full Backup' AS [Check],
+    ISNULL(CONVERT(varchar, MAX(backup_finish_date), 120), 'No backup found') AS [Value],
+    CASE 
+        WHEN MAX(backup_finish_date) IS NOT NULL THEN N'✅ OK'
+        ELSE N'⚠️ WARNING: No recent full backup for SSISDB'
+    END AS [Status]
+FROM msdb.dbo.backupset
+WHERE database_name = 'SSISDB' AND type = 'D';
+
+-- 6. SQL Agent jobs referencing SSISDB
+USE msdb;
+SELECT 
+    'SQL Agent Jobs referencing SSISDB' AS [Check],
+    COUNT(*) AS [Value],
+    CASE 
+        WHEN COUNT(*) > 0 THEN N'⚠️ WARNING: Review jobs for AG compatibility'
+        ELSE N'✅ OK'
+    END AS [Status]
+FROM dbo.sysjobs sj
+JOIN dbo.sysjobsteps sjs ON sj.job_id = sjs.job_id
+WHERE sjs.command LIKE '%SSISDB%' OR sjs.command LIKE '%dtexec%';
+
+-- 7. AG health and synchronization state
+SELECT 
+    'AG Synchronization State' AS [Check],
+ SUBSTRING(STRING_AGG(ar.replica_server_name + ': ' + drs.synchronization_state_desc, '; '),1,90) AS [Value],
+    CASE 
+        WHEN MIN(drs.synchronization_state_desc) = 'SYNCHRONIZED' THEN N'✅ OK'
+        ELSE N'⚠️ WARNING: Not all replicas are synchronized'
+    END AS [Status]
+FROM sys.dm_hadr_database_replica_states drs
+JOIN sys.availability_replicas ar ON drs.replica_id = ar.replica_id
+JOIN sys.availability_groups ag ON ar.group_id = ag.group_id
+WHERE db_name(drs.database_id) = 'SSISDB';
+
+-- 8. Orphaned users in SSISDB
+USE SSISDB;
+SELECT 
+    'Orphaned Users' AS [Check],
+    SUBSTRING(STRING_AGG(dp.name, ', '),1,30) AS [Value],
+    CASE 
+        WHEN COUNT(*) = 0 THEN N'✅ OK'
+        ELSE N'⚠️ WARNING: Orphaned users found'
+    END AS [Status]
+FROM sys.database_principals dp
+LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
+WHERE dp.type IN ('S', 'U', 'G') AND sp.sid IS NULL AND dp.name NOT IN ('dbo', 'guest', 'INFORMATION_SCHEMA', 'sys');
+
+-- 9. AG Listener exists
+USE master;
+SELECT 
+    'AG Listener' AS [Check],
+    SUBSTRING(ISNULL(STRING_AGG(dns_name, ', '), 'None'),1,30) AS [Value],
+    CASE 
+        WHEN COUNT(*) > 0 THEN N'✅ OK'
+        ELSE N'⚠️ WARNING: No AG Listener found'
+    END AS [Status]
+FROM sys.availability_group_listeners;
+
+-- 10. Linked servers exist
+SELECT 
+    'Linked Servers' AS [Check],
+   SUBSTRING(ISNULL(STRING_AGG(name, ', '), 'None'),1,40) AS [Value],
+    'INFO: Review linked servers for AG compatibility' AS [Status]
+FROM sys.servers
+WHERE is_linked = 1;
