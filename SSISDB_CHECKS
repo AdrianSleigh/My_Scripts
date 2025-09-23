@@ -1,5 +1,17 @@
 --SSISDB checks Adrian Sleigh 23/09/25
 --------------------------------------
+--get encryption key password and test with below code
+/*
+PRINT 'Opening the master key'
+USE SSISDB;  
+OPEN MASTER KEY DECRYPTION BY PASSWORD = 'passwordhere';  
+GO  
+CLOSE MASTER KEY;
+PRINT 'Closing the master key'
+GO
+*/
+--------------------------------------------------------------
+
 -- 1. SQL Server version and edition
 SET NOCOUNT ON
 PRINT N'📊 Generating Report...';
