@@ -1,0 +1,60 @@
+-- Top CPU consumers from the plan cache (by avg CPU)
+-- Requires: VIEW SERVER STATE
+SET NOCOUNT ON;
+
+WITH TopQs AS
+(
+    SELECT TOP (50)
+        qs.plan_handle,
+        qs.sql_handle,
+        qs.statement_start_offset,
+        qs.statement_end_offset,
+        qs.total_worker_time,           -- microseconds
+        qs.total_elapsed_time,          -- microseconds
+        qs.total_logical_reads,
+        qs.total_logical_writes,
+        qs.execution_count,
+        qs.last_execution_time,
+        qs.query_hash,
+        qs.query_plan_hash
+    FROM sys.dm_exec_query_stats AS qs
+    ORDER BY (qs.total_worker_time / NULLIF(qs.execution_count, 0)) DESC
+)
+SELECT
+    AvgCPU_ms           = (tq.total_worker_time / NULLIF(tq.execution_count, 0)) / 1000.0,
+    TotalCPU_ms         = tq.total_worker_time / 1000.0,
+    AvgDuration_ms      = (tq.total_elapsed_time / NULLIF(tq.execution_count, 0)) / 1000.0,
+    ExecCount           = tq.execution_count,
+    AvgReads            = tq.total_logical_reads / NULLIF(tq.execution_count, 0),
+    AvgWrites           = tq.total_logical_writes / NULLIF(tq.execution_count, 0),
+    LastExecTime        = tq.last_execution_time,
+    DatabaseName        = COALESCE(DB_NAME(CONVERT(int, pa_db.value)), DB_NAME(t.dbid)),
+    ObjectName          = CASE 
+                            WHEN t.objectid IS NOT NULL 
+                                THEN QUOTENAME(OBJECT_SCHEMA_NAME(t.objectid, t.dbid)) + N'.' + QUOTENAME(OBJECT_NAME(t.objectid, t.dbid))
+                          END,
+    QueryHash           = tq.query_hash,
+    PlanHash            = tq.query_plan_hash,
+    -- Statement text slice (handles -1 end offset; uses DATALENGTH for correct byte math)
+    QueryText = CASE 
+                    WHEN t.text IS NULL THEN NULL
+                    ELSE SUBSTRING(
+                        t.text,
+                        (tq.statement_start_offset / 2) + 1,
+                        CASE 
+                            WHEN tq.statement_end_offset = -1 
+                                THEN (DATALENGTH(t.text) - tq.statement_start_offset) / 2
+                            ELSE (tq.statement_end_offset - tq.statement_start_offset) / 2
+                        END
+                    )
+                END,
+    QueryPlan           = p.query_plan
+FROM TopQs AS tq
+CROSS APPLY sys.dm_exec_sql_text(tq.sql_handle) AS t
+OUTER APPLY sys.dm_exec_query_plan(tq.plan_handle) AS p
+OUTER APPLY (
+    SELECT TOP (1) value
+    FROM sys.dm_exec_plan_attributes(tq.plan_handle)
+    WHERE attribute = 'dbid'
+) AS pa_db
+ORDER BY AvgCPU_ms DESC;
