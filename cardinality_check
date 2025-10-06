@@ -1,0 +1,64 @@
+--Check for legacy cardinality estimator
+--include compatibility level and querystore status
+--Adrian Sleigh 23/04/24
+-----------------------------------------
+DECLARE @dbName NVARCHAR(128);
+DECLARE @compatLevel INT;
+DECLARE @sql NVARCHAR(MAX);
+
+-- Temp table for results
+IF OBJECT_ID('tempdb..#DBStatus') IS NOT NULL DROP TABLE #DBStatus;
+CREATE TABLE #DBStatus (
+    DatabaseName NVARCHAR(128),
+    CompatibilityLevel INT,
+    LCE_Value NVARCHAR(10),
+    QueryStoreStatus NVARCHAR(20)
+);
+
+DECLARE db_cursor CURSOR FOR
+SELECT name, compatibility_level 
+FROM sys.databases 
+WHERE state_desc = 'ONLINE' AND name NOT IN ('master', 'tempdb', 'model', 'msdb');
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @dbName, @compatLevel;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @sql = '
+    USE [' + @dbName + '];
+    DECLARE @LCE NVARCHAR(10);
+    DECLARE @QS NVARCHAR(20);
+
+    SELECT @LCE = CONVERT(NVARCHAR(10), value)
+    FROM sys.database_scoped_configurations
+    WHERE name = ''LEGACY_CARDINALITY_ESTIMATION'';
+
+    SELECT @QS = 
+        CASE actual_state
+            WHEN 0 THEN ''OFF''
+            WHEN 1 THEN ''READ_ONLY''
+            WHEN 2 THEN ''READ_WRITE''
+            WHEN 3 THEN ''ERROR''
+            WHEN 4 THEN ''RECOVERY''
+            WHEN 5 THEN ''SUSPENDED''
+            ELSE ''UNKNOWN''
+        END
+    FROM sys.database_query_store_options;
+
+    INSERT INTO #DBStatus
+    SELECT ''' + @dbName + ''' AS DatabaseName,
+           ' + CAST(@compatLevel AS NVARCHAR) + ' AS CompatibilityLevel,
+           @LCE,
+           @QS;';
+    
+    EXEC sp_executesql @sql;
+
+    FETCH NEXT FROM db_cursor INTO @dbName, @compatLevel;
+END
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+-- Show results
+SELECT * FROM #DBStatus ORDER BY DatabaseName;
