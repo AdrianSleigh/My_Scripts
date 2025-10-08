@@ -1,0 +1,27 @@
+--Agent job fails
+--08/10/25
+--Adrian Sleigh
+
+SELECT
+   SUBSTRING(j.name,1,50) AS JobName,
+    h.step_id,
+   SUBSTRING(h.step_name,1,40)AS step_name,
+    h.run_date,
+    h.run_time,
+    h.run_duration,
+    h.message AS ErrorMessage,
+    CASE
+        WHEN h.message LIKE '%Login failed%' THEN N'🔑 Check SQL Agent service account permissions or credentials.'
+        WHEN h.message LIKE '%could not find stored procedure%' THEN N'📄 Verify the procedure exists and is accessible.'
+        WHEN h.message LIKE '%timeout%' THEN N'⏱️ Investigate query performance or resource contention.'
+        WHEN h.message LIKE '%network-related%' THEN N'🌐 Check network connectivity and linked server configuration.'
+        WHEN h.message LIKE '%Access is denied%' THEN N'🔐 Check file system or OS-level permissions.'
+        WHEN h.message LIKE '%The process could not be created%' THEN N'⚙️ Check job step command and executable path.'
+        WHEN h.message LIKE '%Out of memory%' THEN N'🧠 Review memory usage and consider increasing server resources.'
+        WHEN h.message LIKE '%deadlock%' THEN N'🔄 Review transaction logic and indexing to reduce contention.'
+        ELSE N'🛠️ Review the error message for specific troubleshooting steps.'
+    END AS SuggestedFix
+FROM msdb.dbo.sysjobhistory h
+JOIN msdb.dbo.sysjobs j ON h.job_id = j.job_id
+WHERE h.run_status = 0  -- Failed
+ORDER BY h.run_date DESC, h.run_time DESC;
