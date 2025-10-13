@@ -1,0 +1,93 @@
+/*Adrian Sleigh 13/10/25
+The script analyzes query performance metrics from SQL Server's dynamic management
+views and assigns a complexity score (1–5) to each database based on:
+CPU usage
+Query duration
+Logical reads
+Query length
+
+*/
+-- Create temp table
+IF OBJECT_ID('tempdb..#databasecomplexitytrend') IS NOT NULL
+    DROP TABLE #databasecomplexitytrend;
+
+CREATE TABLE #databasecomplexitytrend (
+    databasename NVARCHAR(128),
+    raw_score FLOAT,
+    query_complexity_score INT
+);
+
+-- CTEs for scoring
+WITH QueryStats AS (
+    SELECT 
+        DB_NAME(st.dbid) AS databasename,
+        qs.total_worker_time / qs.execution_count AS avg_cpu,
+        qs.total_elapsed_time / qs.execution_count AS avg_duration,
+        qs.total_logical_reads / qs.execution_count AS avg_reads,
+        LEN(st.text) AS query_length,
+        p.query_plan AS plan_xml
+    FROM sys.dm_exec_query_stats qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+    CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) p
+    WHERE st.dbid IS NOT NULL
+),
+PlanCost AS (
+    SELECT 
+        databasename,
+        avg_cpu,
+        avg_duration,
+        avg_reads,
+        query_length,
+        plan_xml.value('(/ShowPlanXML/BatchSequence/Batch/Statements/StmtSimple/@StatementSubTreeCost)[1]', 'float') AS plan_cost
+    FROM QueryStats
+),
+Aggregated AS (
+    SELECT 
+        databasename,
+        AVG(avg_cpu) AS avg_cpu,
+        AVG(avg_duration) AS avg_duration,
+        AVG(avg_reads) AS avg_reads,
+        AVG(query_length) AS avg_length,
+        AVG(plan_cost) AS avg_plan_cost
+    FROM PlanCost
+    GROUP BY databasename
+),
+Scored AS (
+    SELECT 
+        d.name AS databasename,
+        ISNULL(a.avg_cpu, 0) AS avg_cpu,
+        ISNULL(a.avg_duration, 0) AS avg_duration,
+        ISNULL(a.avg_reads, 0) AS avg_reads,
+        ISNULL(a.avg_length, 0) AS avg_length,
+        ISNULL(a.avg_plan_cost, 0) AS avg_plan_cost,
+        (
+            CASE WHEN ISNULL(a.avg_cpu, 0) < 100 THEN 0.2 WHEN a.avg_cpu < 500 THEN 0.4 WHEN a.avg_cpu < 1000 THEN 0.6 WHEN a.avg_cpu < 2000 THEN 0.8 ELSE 1.0 END +
+            CASE WHEN ISNULL(a.avg_duration, 0) < 100 THEN 0.2 WHEN a.avg_duration < 500 THEN 0.4 WHEN a.avg_duration < 1000 THEN 0.6 WHEN a.avg_duration < 2000 THEN 0.8 ELSE 1.0 END +
+            CASE WHEN ISNULL(a.avg_reads, 0) < 1000 THEN 0.2 WHEN a.avg_reads < 5000 THEN 0.4 WHEN a.avg_reads < 10000 THEN 0.6 WHEN a.avg_reads < 20000 THEN 0.8 ELSE 1.0 END +
+            CASE WHEN ISNULL(a.avg_length, 0) < 100 THEN 0.2 WHEN a.avg_length < 500 THEN 0.4 WHEN a.avg_length < 1000 THEN 0.6 WHEN a.avg_length < 2000 THEN 0.8 ELSE 1.0 END +
+            CASE WHEN ISNULL(a.avg_plan_cost, 0) < 0.5 THEN 0.2 WHEN a.avg_plan_cost < 1 THEN 0.4 WHEN a.avg_plan_cost < 2 THEN 0.6 WHEN a.avg_plan_cost < 5 THEN 0.8 ELSE 1.0 END
+        ) AS raw_score
+    FROM sys.databases d
+    LEFT JOIN Aggregated a ON d.name = a.databasename
+)
+
+-- Insert into temp table
+INSERT INTO #databasecomplexitytrend (databasename, raw_score, query_complexity_score)
+SELECT 
+    databasename,
+    ROUND(raw_score, 2),
+    CASE 
+        WHEN raw_score <= 1 THEN 1
+        WHEN raw_score BETWEEN 1.0 AND 1.49 THEN 1
+        WHEN raw_score BETWEEN 1.50 AND 1.99 THEN 2
+        WHEN raw_score BETWEEN 2.0 AND 2.49 THEN 2
+        WHEN raw_score BETWEEN 2.50 AND 3.0 THEN 3
+        WHEN raw_score BETWEEN 3.01 AND 3.49 THEN 3
+        WHEN raw_score BETWEEN 3.50 AND 3.99 THEN 4
+        WHEN raw_score BETWEEN 4.0 AND 4.49 THEN 4
+        ELSE 5
+    END
+FROM Scored;
+
+-- Optional: View results
+SELECT * FROM #databasecomplexitytrend;
