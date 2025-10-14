@@ -1,0 +1,53 @@
+-- Adrian Sleigh 14/10/25
+-- Predicted capacity forecast database growth using backup history (last 12 months)
+SET NOCOUNT ON;
+DECLARE @endDate DATETIME = GETDATE();
+DECLARE @months SMALLINT = 12;
+
+;WITH HIST AS (
+    SELECT 
+        BS.database_name AS DatabaseName,
+        YEAR(BS.backup_start_date) * 100 + MONTH(BS.backup_start_date) AS YearMonth,
+        CONVERT(NUMERIC(10, 2), AVG(BS.backup_size / 1048576.0)) AS AvgSizeMB
+    FROM msdb.dbo.backupset AS BS
+    WHERE BS.type = 'D'
+        AND BS.database_name NOT IN ('Master', 'Msdb', 'Model', 'Tempdb', 'SQLMonitoring')
+        AND BS.backup_start_date BETWEEN DATEADD(MONTH, -@months, @endDate) AND @endDate
+    GROUP BY BS.database_name, YEAR(BS.backup_start_date), MONTH(BS.backup_start_date)
+),
+GrowthCalc AS (
+    SELECT 
+        DatabaseName,
+        MIN(YearMonth) AS StartMonth,
+        MAX(YearMonth) AS EndMonth,
+        MIN(AvgSizeMB) AS StartSizeMB,
+        MAX(AvgSizeMB) AS EndSizeMB,
+        COUNT(*) AS MonthCount,
+        CONVERT(NUMERIC(10, 2), (MAX(AvgSizeMB) - MIN(AvgSizeMB)) / NULLIF(COUNT(*) - 1, 0)) AS MonthlyGrowthMB
+    FROM HIST
+    GROUP BY DatabaseName
+),
+Forecast AS (
+    SELECT 
+        DatabaseName,
+        CONVERT(NUMERIC(10, 2), EndSizeMB) AS CurrentSizeMB,
+        MonthlyGrowthMB,
+        CONVERT(NUMERIC(10, 2), EndSizeMB + (MonthlyGrowthMB * 3)) AS Forecast_3_Months_MB,
+        CONVERT(NUMERIC(10, 2), EndSizeMB + (MonthlyGrowthMB * 6)) AS Forecast_6_Months_MB,
+        -- % Increase/Decrease
+        CONVERT(NUMERIC(5, 2), ((EndSizeMB + (MonthlyGrowthMB * 3)) - EndSizeMB) * 100.0 / NULLIF(EndSizeMB, 0)) AS PercentGrowth_3_Months,
+        CONVERT(NUMERIC(5, 2), ((EndSizeMB + (MonthlyGrowthMB * 6)) - EndSizeMB) * 100.0 / NULLIF(EndSizeMB, 0)) AS PercentGrowth_6_Months
+    FROM GrowthCalc
+)
+SELECT 
+    Getdate() As Ran_Date,
+   SUBSTRING(@@SERVERNAME,1,20) AS SQL_Instance,
+   SUBSTRING(DatabaseName,1,40) AS DatabaseName,
+    CurrentSizeMB,
+    MonthlyGrowthMB,
+    Forecast_3_Months_MB,
+    PercentGrowth_3_Months AS [%Growth_3_Months],
+    Forecast_6_Months_MB,
+    PercentGrowth_6_Months AS [%Growth_6_Months]
+FROM Forecast
+ORDER BY DatabaseName;
