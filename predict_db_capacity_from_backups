@@ -51,3 +51,90 @@ SELECT
     PercentGrowth_6_Months AS [%Growth_6_Months]
 FROM Forecast
 ORDER BY DatabaseName;
+--------------------------------ADDED alternative 
+-- Adrian Sleigh 14/10/25
+-- Predicted capacity forecast database growth using backup history (last 12 months)
+------------------------------------------------------------------------------------
+SET NOCOUNT ON;
+DECLARE @endDate DATETIME = GETDATE();
+DECLARE @months SMALLINT = 12;
+
+-- Volume stats
+;WITH VolumeStats AS (
+    SELECT 
+        vs.database_id,
+        DB_NAME(vs.database_id) AS DatabaseName,
+        CONVERT(NUMERIC(10, 2), MAX(vs.total_bytes) / 1048576.0) AS TotalDiskSizeMB,
+        CONVERT(NUMERIC(10, 2), MAX(vs.available_bytes) / 1048576.0) AS FreeDiskSpaceMB
+    FROM sys.master_files AS mf
+    CROSS APPLY sys.dm_os_volume_stats(mf.database_id, mf.file_id) AS vs
+    WHERE DB_NAME(vs.database_id) NOT IN ('Master', 'Msdb', 'Model')
+    GROUP BY vs.database_id
+),
+-- Backup history
+HIST AS (
+    SELECT 
+        BS.database_name AS DatabaseName,
+        YEAR(BS.backup_start_date) * 100 + MONTH(BS.backup_start_date) AS YearMonth,
+        CONVERT(NUMERIC(10, 2), AVG(BS.backup_size / 1048576.0)) AS AvgSizeMB
+    FROM msdb.dbo.backupset AS BS
+    WHERE BS.type = 'D'
+        AND BS.database_name NOT IN ('Master', 'Msdb', 'Model')
+        AND BS.backup_start_date BETWEEN DATEADD(MONTH, -@months, @endDate) AND @endDate
+    GROUP BY BS.database_name, YEAR(BS.backup_start_date), MONTH(BS.backup_start_date)
+),
+-- Growth calculation
+GrowthCalc AS (
+    SELECT 
+        DatabaseName,
+        MAX(AvgSizeMB) AS EndSizeMB,
+        COUNT(*) AS MonthCount,
+        CONVERT(NUMERIC(10, 2), (MAX(AvgSizeMB) - MIN(AvgSizeMB)) / NULLIF(COUNT(*) - 1, 0)) AS MonthlyGrowthMB
+    FROM HIST
+    GROUP BY DatabaseName
+),
+-- Actual file size
+DiskUsage AS (
+    SELECT 
+        DB_NAME(database_id) AS DatabaseName,
+        CONVERT(NUMERIC(10, 2), SUM(size) * 8 / 1024.0) AS CurrentFileSizeMB
+    FROM sys.master_files
+    WHERE DB_NAME(database_id) NOT IN ('Master', 'Msdb', 'Model')
+    GROUP BY database_id
+),
+-- Final forecast
+Forecast AS (
+    SELECT 
+        G.DatabaseName,
+        G.EndSizeMB AS CurrentBackupSizeMB,
+        G.MonthlyGrowthMB,
+        G.EndSizeMB + (G.MonthlyGrowthMB * 6) AS Forecast_6_Months_MB,
+        D.CurrentFileSizeMB,
+        V.TotalDiskSizeMB,
+        V.FreeDiskSpaceMB,
+        V.FreeDiskSpaceMB - (G.MonthlyGrowthMB * 6) AS FreeSpaceAfterForecast_MB,
+        CASE 
+            WHEN (V.FreeDiskSpaceMB - (G.MonthlyGrowthMB * 6)) < (V.TotalDiskSizeMB * 0.10)
+            THEN '⚠️ Low Space (<10%)'
+            ELSE 'OK'
+        END AS SpaceWarning
+    FROM GrowthCalc G
+    LEFT JOIN DiskUsage D ON G.DatabaseName = D.DatabaseName
+    LEFT JOIN VolumeStats V ON G.DatabaseName = V.DatabaseName
+)
+SELECT 
+    Getdate() As RanDate,
+	'--' As '-',
+    SUBSTRING(@@SERVERNAME,1,40) AS SQL_Instance,
+    SUBSTRING(DatabaseName,1,40) AS DatabaseName,
+    CurrentBackupSizeMB,
+    MonthlyGrowthMB,
+    Forecast_6_Months_MB,
+    CurrentFileSizeMB,
+    TotalDiskSizeMB,
+    FreeDiskSpaceMB,
+    FreeSpaceAfterForecast_MB,
+    SpaceWarning
+FROM Forecast
+ORDER BY DatabaseName;
+------------------------------------------------------------------
