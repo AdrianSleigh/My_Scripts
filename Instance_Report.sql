@@ -2,8 +2,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 22/09/25
---Version 27.0 Fixed minor issues with tempdb sizes
+--Written By Adrian Sleigh 22/10/25
+--Version 28.0 added SSRSserver connection info
 ---------------------------------------------------------------------------
 PRINT N'📊 Generating Report...';
 SELECT
@@ -1551,8 +1551,33 @@ ELSE
 BEGIN
     PRINT 'Script is running on the SECONDARY. Skipping ----.';
 END
+--------------------------------------------------------------
+--GET SSRS SERVERS LIST
+IF EXISTS (
+    SELECT 1 
+    FROM sys.databases 
+    WHERE name = 'ReportServer' AND state_desc = 'ONLINE'
+)
+BEGIN
+    IF DATABASEPROPERTYEX('ReportServer', 'Updateability') = 'READ_WRITE'
+    BEGIN
+        -- Safe to run SSRS-related queries
+     SELECT 
+SUBSTRING(MachineName,1,30) AS 'Associated SSRS Servers' 
+FROM ReportServer.dbo.Keys
+WHERE MachineName IS NOT NULL;
+    END
+    ELSE
+    BEGIN
+        PRINT 'ReportServer database is not writable (likely on AG secondary). Skipping SSRS queries.';
+    END
+END
+ELSE
+BEGIN
+    PRINT 'ReportServer database does not exist on this instance.';
+END
 
-
+------------------------------------------------------------------------
 ----GET LIST ALL JOBS
 PRINT'SQL AGENT JOB LIST'
 PRINT'------------------'
@@ -2799,7 +2824,6 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
-
 
 
 
