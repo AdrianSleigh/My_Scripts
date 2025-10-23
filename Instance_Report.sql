@@ -2,8 +2,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 22/10/25
---Version 28.0 added SSRSserver connection info
+--Written By Adrian Sleigh 23/10/25
+--Version 29.0 fixed SSIS false positive for standalone seever
 ---------------------------------------------------------------------------
 PRINT N'📊 Generating Report...';
 SELECT
@@ -1671,7 +1671,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'⛔ NO SSIS PACKAGES PRESENT';
+    PRINT N'⛔ NO SSIS PACKAGES IN FOLDERS PRESENT';
 END
 ------------------------------------------------------------
 --- 'SSIS PACKAGES IN SSISDB '
@@ -1723,32 +1723,50 @@ BEGIN
     PRINT N'⛔ NO SSIS PACKAGES IN MSDB';
 END
 GO
+-------------------------------------------------
+
 -----------------------------------------------
 --GET SSIS SCALE OUT
 ---------------------------------------------------
--- Check if SSISDB exists
+---revised 23/10/25 to remove false positives on standalone
 IF EXISTS (
     SELECT 1
-    FROM master.dbo.sysdatabases
-    WHERE name = 'SSISDB'
+    FROM sys.databases
+    WHERE name = 'SSISDB' AND state_desc = 'ONLINE'
 )
 BEGIN
-    PRINT N'⚠️ SSISDB FOUND';
+    PRINT N'✅ SSISDB FOUND';
 
+    DECLARE @IsInAG BIT = 0;
     DECLARE @IsPrimaryReplica BIT = 0;
 
-    -- Check if current replica is primary for SSISDB
+    -- Check if SSISDB is part of an AG
     IF EXISTS (
         SELECT 1
         FROM sys.dm_hadr_database_replica_states AS drs
         JOIN sys.databases AS db ON drs.database_id = db.database_id
-        WHERE db.name = 'SSISDB' AND drs.is_primary_replica = 1
+        WHERE db.name = 'SSISDB'
     )
-    SET @IsPrimaryReplica = 1;
+    BEGIN
+        SET @IsInAG = 1;
 
+        -- Check if current replica is primary
+        IF EXISTS (
+            SELECT 1
+            FROM sys.dm_hadr_database_replica_states AS drs
+            JOIN sys.databases AS db ON drs.database_id = db.database_id
+            WHERE db.name = 'SSISDB' AND drs.is_primary_replica = 1
+        )
+        SET @IsPrimaryReplica = 1;
+    END
+    ELSE
+    BEGIN
+        -- Not in AG, assume standalone and writable
+        SET @IsPrimaryReplica = 1;
+    END
     IF @IsPrimaryReplica = 1
     BEGIN
-        PRINT 'SSISDB is on the primary replica';
+        PRINT N'✅ SSISDB is writable (primary or standalone)';
 
         BEGIN TRY
             DECLARE @enabled BIT;
@@ -1758,24 +1776,23 @@ BEGIN
             WHERE property_name = 'ScaleOutMasterEnabled';
 
             IF @enabled = 1
-                PRINT 'SSIS SCALE OUT DEPLOYED';
+                PRINT N'🚀 SSIS SCALE OUT DEPLOYED';
             ELSE
                 PRINT N'⛔ NO SSIS SCALE OUT DEPLOYED';
         END TRY
         BEGIN CATCH
-            PRINT '⚠️ Error accessing SSISDB catalog properties';
+            PRINT N'⚠️ Error accessing SSISDB catalog properties';
         END CATCH;
     END
     ELSE
     BEGIN
-        PRINT 'SSISDB is on a secondary replica — skipping query to avoid error';
+        PRINT N'🕒 SSISDB is on AG secondary — skipping catalog query';
     END
 END
 ELSE
 BEGIN
     PRINT N'⛔ SSISDB not found';
 END
-
 PRINT '---------------------------';
 
 -- Check for user tables in MASTER
@@ -2824,6 +2841,9 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
+
+
+
 
 
 
