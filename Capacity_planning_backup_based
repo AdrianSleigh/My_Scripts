@@ -1,7 +1,8 @@
---SQLDatabase capacity planning
--- Based on backup sizes
+-- SQLDatabase capacity planning
 -- Adrian Sleigh 24/10/25
---------------------------------------
+-- Based on backup sizes over last 12 months or last period
+-- As backups are compressed sizing is only used as a guide to growth patterns
+-----------------------------------------------------------------------------
 DECLARE @startDate DATETIME;
 SET @startDate = GETDATE();
 
