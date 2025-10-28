@@ -1,0 +1,56 @@
+
+----SSISDB get package and project string info
+---Adrian Sleigh 28/10/25
+
+USE SSISDB;
+GO
+
+SELECT
+    f.name AS folder_name,
+    p.name AS project_name,
+    op.object_name AS package_name,
+    op.parameter_name,
+    op.design_default_value AS design_time_value,
+    op.default_value AS configured_value,
+    op.value_type,
+    op.sensitive
+FROM
+    catalog.object_parameters op
+    INNER JOIN catalog.projects p ON op.project_id = p.project_id
+    INNER JOIN catalog.folders f ON p.folder_id = f.folder_id
+WHERE
+    op.object_type = 20 -- Project-level parameters
+    AND (
+        op.parameter_name LIKE '%Connection%' OR
+        op.parameter_name LIKE '%ConnStr%' OR
+        CAST(op.design_default_value AS NVARCHAR(MAX)) LIKE '%Initial Catalog=%'
+    )
+ORDER BY
+    f.name, p.name, op.parameter_name;
+
+	--------------------------------------------------------------------
+	USE SSISDB;
+GO
+
+SELECT
+    f.name AS folder_name,
+    p.name AS project_name,
+    op.object_name AS package_name,
+    op.parameter_name,
+    op.design_default_value AS design_time_value,
+    op.default_value AS configured_value,
+    op.value_type,
+    op.sensitive
+FROM
+    catalog.object_parameters op
+    INNER JOIN catalog.projects p ON op.project_id = p.project_id
+    INNER JOIN catalog.folders f ON p.folder_id = f.folder_id
+WHERE
+    op.object_type = 30 -- Package-level parameters
+    AND (
+        op.parameter_name LIKE '%Connection%' OR
+        op.parameter_name LIKE '%ConnStr%' OR
+        CAST(op.design_default_value AS NVARCHAR(MAX)) LIKE '%Initial Catalog=%'
+    )
+ORDER BY
+    f.name, p.name, op.object_name, op.parameter_name;
