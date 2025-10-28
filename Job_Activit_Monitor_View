@@ -1,0 +1,168 @@
+---JOB ACTIVITY MONITOR
+--Adrian Sleigh 28/10/25
+--~Recreates similar info to the SSMS Job Activity Monitor
+---------------------------
+
+SET NOCOUNT ON;
+
+/* Helpers to convert Agent's int date/time formats */
+DECLARE @NowUTC datetime2(0) = SYSUTCDATETIME();
+
+;WITH
+-- Current activity snapshot (1 row per job per Agent session; we take the latest session)
+ja AS
+(
+    SELECT ja.job_id,
+           ja.start_execution_date,
+           ja.stop_execution_date,
+           ja.next_scheduled_run_date,         -- datetime (may be null)
+           ja.run_requested_date,
+           ja.run_requested_source,
+           ja.session_id,
+           ROW_NUMBER() OVER (PARTITION BY ja.job_id ORDER BY ja.session_id DESC, ja.start_execution_date DESC) AS rn
+    FROM msdb.dbo.sysjobactivity AS ja
+),
+-- Last outcome per job (step_id = 0 rows are the job outcome)
+last_outcome AS
+(
+    SELECT h.job_id,
+           h.run_status,        -- 0 Failed, 1 Succeeded, 2 Retry, 3 Canceled, 4 In Progress (rare here)
+           h.run_date,
+           h.run_time,
+           h.run_duration,
+           h.message,
+           ROW_NUMBER() OVER (PARTITION BY h.job_id ORDER BY h.instance_id DESC) AS rn
+    FROM msdb.dbo.sysjobhistory AS h
+    WHERE h.step_id = 0
+),
+-- Current step info for executing jobs (step_id > 0, last instance for the job)
+current_step AS
+(
+    SELECT h.job_id,
+           h.step_id,
+           h.step_name,
+           h.run_status,
+           h.run_date,
+           h.run_time,
+           h.run_duration,
+           h.message,
+           ROW_NUMBER() OVER (PARTITION BY h.job_id ORDER BY h.instance_id DESC) AS rn
+    FROM msdb.dbo.sysjobhistory AS h
+    WHERE h.step_id > 0
+),
+-- Schedules attached to jobs (text concatenation via FOR XML PATH)
+sched AS
+(
+    SELECT
+        j.job_id,
+        schedules = STUFF((
+            SELECT N'; ' + s.name
+            FROM msdb.dbo.sysjobschedules js2
+            INNER JOIN msdb.dbo.sysschedules s
+                    ON s.schedule_id = js2.schedule_id
+            WHERE js2.job_id = j.job_id
+            FOR XML PATH(''), TYPE
+        ).value('.','nvarchar(max)'), 1, 2, N'')
+    FROM msdb.dbo.sysjobs j
+),
+-- Next run time (from sysjobschedules) — use Agent’s computed next_run_date/time when available
+next_run AS
+(
+    SELECT
+        js.job_id,
+        CASE WHEN js.next_run_date IS NULL OR js.next_run_date = 0 THEN NULL
+             ELSE TRY_CONVERT(datetime2(0),
+                     STUFF(STUFF(RIGHT('00000000' + CONVERT(varchar(8), js.next_run_date), 8), 5, 0, '-'), 7, 0, '-')
+                     + N' ' +
+                     STUFF(STUFF(RIGHT('000000' + CONVERT(varchar(6), js.next_run_time), 6), 3, 0, ':'), 6, 0, ':')
+                 )
+        END AS next_run_datetime
+    FROM msdb.dbo.sysjobschedules AS js
+),
+-- jobserver row (per job) includes last_run_outcome/last_outcome_message too, but we trust history
+jsrv AS
+(
+    SELECT job_id,
+           server_id,
+           last_run_outcome
+    FROM msdb.dbo.sysjobservers
+)
+SELECT
+    j.name                           AS [JobName],
+    CASE WHEN j.enabled = 1 THEN 'Yes' ELSE 'No' END AS [Enabled],
+    c.name                           AS [Category],
+    SUSER_SNAME(j.owner_sid)         AS [Owner],
+    ISNULL(sched.schedules, N'(none)') AS [Schedules],
+
+    -- Current execution state
+    CASE 
+        WHEN ja2.start_execution_date IS NOT NULL AND ja2.stop_execution_date IS NULL THEN N'Executing'
+        WHEN ja2.start_execution_date IS NULL AND ja2.stop_execution_date IS NULL THEN N'Idle'
+        WHEN ja2.start_execution_date IS NOT NULL AND ja2.stop_execution_date IS NOT NULL THEN N'Idle'
+        ELSE N'Idle'
+    END                               AS [CurrentExecutionStatus],
+
+    -- Current running step (if executing)
+    cs.step_id                        AS [CurrentStepID],
+    cs.step_name                      AS [CurrentStepName],
+
+    -- Duration so far if executing
+    CASE 
+        WHEN ja2.start_execution_date IS NOT NULL AND ja2.stop_execution_date IS NULL
+             THEN CONVERT(varchar(12),
+                          DATEADD(SECOND, DATEDIFF(SECOND, ja2.start_execution_date, SYSUTCDATETIME()), '19000101'),
+                          114) -- HH:MM:SS
+        ELSE NULL
+    END                               AS [CurrentRunHHMMSS],
+
+    -- Last run outcome
+    CASE lo.run_status
+         WHEN 0 THEN N'Failed'
+         WHEN 1 THEN N'Succeeded'
+         WHEN 2 THEN N'Retry'
+         WHEN 3 THEN N'Canceled'
+         WHEN 4 THEN N'In Progress'
+         ELSE N'(unknown)'
+    END                               AS [LastRunOutcome],
+
+    -- Last run datetime (converted from int run_date/run_time)
+    CASE WHEN lo.run_date IS NULL OR lo.run_date = 0 THEN NULL
+         ELSE TRY_CONVERT(datetime2(0),
+                 STUFF(STUFF(RIGHT('00000000' + CONVERT(varchar(8), lo.run_date), 8), 5, 0, '-'), 7, 0, '-')
+                 + N' ' +
+                 STUFF(STUFF(RIGHT('000000' + CONVERT(varchar(6), lo.run_time), 6), 3, 0, ':'), 6, 0, ':')
+             )
+    END                               AS [LastRunDateTime],
+
+    -- Last run duration (HH:MM:SS) from Agent’s HHMMSS int
+    CASE WHEN lo.run_duration IS NULL THEN NULL
+         ELSE RIGHT('00' + CONVERT(varchar(2), (lo.run_duration / 10000) % 100), 2) + ':' +
+              RIGHT('00' + CONVERT(varchar(2), (lo.run_duration / 100) % 100), 2) + ':' +
+              RIGHT('00' + CONVERT(varchar(2),  lo.run_duration % 100), 2)
+    END                               AS [LastRunHHMMSS],
+
+    lo.message                        AS [LastRunMessage],
+
+    -- Next run time (from sysjobschedules or jobactivity)
+    COALESCE(nr.next_run_datetime, ja2.next_scheduled_run_date) AS [NextRunDateTime],
+
+    -- Misc / server
+    @@SERVERNAME                      AS [ServerName]
+FROM msdb.dbo.sysjobs AS j
+LEFT JOIN msdb.dbo.syscategories AS c
+       ON c.category_id = j.category_id
+LEFT JOIN ja AS ja2
+       ON ja2.job_id = j.job_id AND ja2.rn = 1
+LEFT JOIN current_step AS cs
+       ON cs.job_id = j.job_id AND cs.rn = 1
+LEFT JOIN last_outcome AS lo
+       ON lo.job_id = j.job_id AND lo.rn = 1
+LEFT JOIN sched
+       ON sched.job_id = j.job_id
+LEFT JOIN next_run AS nr
+       ON nr.job_id = j.job_id
+LEFT JOIN jsrv
+       ON jsrv.job_id = j.job_id
+ORDER BY
+    CASE WHEN ja2.start_execution_date IS NOT NULL AND ja2.stop_execution_date IS NULL THEN 0 ELSE 1 END, -- running first
+    j.name;
