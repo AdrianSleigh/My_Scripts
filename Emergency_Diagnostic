@@ -1,7 +1,10 @@
 
+--Emergency fault find SQL instance
+---04/11/25
+---Adrian Sleigh
+---------------------------------------
 SET NOCOUNT ON;
-PRINT '=== SQL Server Emergency Diagnostic Script ===';
-PRINT N'📊 Generating Report...';
+PRINT N'=== 📊 SQL Server Emergency Diagnostic Script ===';
 
 -- Instance Info
 SELECT
@@ -15,7 +18,7 @@ SELECT
     CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 3600) / 60 AS VARCHAR) + ' minutes'
 FROM sys.dm_os_sys_info;
 
-PRINT '===========================================================================================';
+PRINT '===============================================================================================================================';
 
 -- 1. Availability Group Health
 PRINT '[--- Availability Group Health ---]';
@@ -89,17 +92,18 @@ IF EXISTS (
 )
 BEGIN
     PRINT N'⚠️ Issue: One or more jobs failed in the last 24 hours.';
-    PRINT '--> Fix: Review job history, check credentials, permissions, and resource availability.';
 
-    SELECT 
-        SUBSTRING(j.name,1,40) AS JobName,
-        h.run_date,
-        h.run_time,
-        h.message
-    FROM msdb.dbo.sysjobhistory h
-    JOIN msdb.dbo.sysjobs j ON h.job_id = j.job_id
-    WHERE h.run_status <> 1
-    AND CONVERT(DATETIME, CAST(h.run_date AS CHAR(8)), 112) >= DATEADD(DAY, -1, GETDATE());
+SELECT
+    LEFT(j.name, 40) AS FailedJobName,
+    h.step_id,
+    h.run_date,
+    h.run_time,
+    h.message
+FROM msdb.dbo.sysjobhistory h
+JOIN msdb.dbo.sysjobs j ON h.job_id = j.job_id
+WHERE h.run_status = 0
+  AND h.run_date <= CONVERT(INT, CONVERT(CHAR(8), GETDATE()-1, 112))
+ORDER BY h.run_date DESC, h.run_time DESC;
 END
 ELSE
 BEGIN
@@ -125,7 +129,7 @@ SELECT TOP 100
 LogDate,
 '' AS '-',
 SUBSTRING(ProcessInfo,1,10)AS ProcessInfo,
-Textdata
+Textdata AS ErrorLogDetails
 FROM #ErrorLog
 WHERE Textdata NOT LIKE '%Login succeeded%'
   AND Textdata NOT LIKE '%Login successful%'
@@ -164,7 +168,10 @@ BEGIN
     PRINT N'⚠️ Issue: One or more databases are not ONLINE.';
     PRINT '--> Fix: Check for recovery issues, corruption, or intentional offline status.';
 
-    SELECT name, state_desc FROM sys.databases WHERE state_desc <> 'ONLINE';
+    SELECT 
+	SUBSTRING(name,1,40) AS OfflineDatabase, 
+	state_desc 
+	FROM sys.databases WHERE state_desc <> 'ONLINE';
 END
 ELSE
 BEGIN
@@ -190,9 +197,11 @@ PRINT '--> Review top waits above. Investigate high waits like PAGEIOLATCH (disk
 PRINT '[--- TempDB Usage ---]';
 DECLARE @UserObjectsKB INT, @VersionStoreKB INT;
 
-SELECT 
+SELECT
+ 
     @UserObjectsKB = ISNULL(SUM(user_object_reserved_page_count), 0) * 8,
     @VersionStoreKB = ISNULL(SUM(version_store_reserved_page_count), 0) * 8
+
 FROM sys.dm_db_file_space_usage;
 
 IF @UserObjectsKB > 500000 OR @VersionStoreKB > 500000
@@ -217,7 +226,7 @@ PRINT '[--- CPU & Memory Pressure ---]';
 SELECT 
     total_physical_memory_kb / 1024 AS TotalMemoryMB,
     available_physical_memory_kb / 1024 AS AvailableMemoryMB,
-    system_memory_state_desc
+    SUBSTRING(system_memory_state_desc,1,40)AS System_Memory_Desc
 FROM sys.dm_os_sys_memory;
 
 -- 10. Page Life Expectancy
@@ -240,8 +249,10 @@ ELSE
 BEGIN
     PRINT '--> Page Life Expectancy is within acceptable range.';
 END
+---------------------------------------------------------------
 
--- Top CPU Consumers
+-- 11 Top CPU Consumers
+PRINT '[---Top 5 CPU Consumers---]'
 SELECT TOP 5 
     total_worker_time / 1000 AS CPU_ms,
     execution_count,
@@ -249,29 +260,35 @@ SELECT TOP 5
 FROM sys.dm_exec_query_stats qs
 CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle)
 ORDER BY total_worker_time DESC;
-
 PRINT '--> Review memory state and top CPU consumers. Tune expensive queries or add indexes if needed.';
 
--- 11. Long-running Queries
+-- 12. Long-running Queries
 PRINT '[--- Long-running Queries (>5 min) ---]';
+
 IF EXISTS (
-    SELECT 1 FROM sys.dm_exec_requests WHERE total_elapsed_time > 300000
+    SELECT 1
+    FROM sys.dm_exec_requests r
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
+    WHERE r.total_elapsed_time > 300000
+      AND t.text NOT LIKE '%sp_server_diagnostics%'
 )
 BEGIN
-    PRINT N'⚠️ Issue: Long-running queries detected.';
-    PRINT '--> Fix: Review execution plans, indexes, and blocking. Consider query rewrite or resource tuning.';
+    PRINT '⚠️ Long-running request detected (excluding sp_server_diagnostics).';
 
     SELECT 
+        N'⚠️' AS LongRunningQuery,
         r.session_id,
         r.total_elapsed_time / 1000 AS ElapsedSec,
-        t.text AS sql_text
+        SUBSTRING(t.text, 1, 100) AS sql_text
     FROM sys.dm_exec_requests r
     CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
-    WHERE r.total_elapsed_time > 300000;
+    WHERE r.total_elapsed_time > 300000
+      AND t.text NOT LIKE '%sp_server_diagnostics%';
 END
 ELSE
 BEGIN
     PRINT '--> No long-running queries over 5 minutes.';
 END
 
+PRINT '================================================================================================================'
 PRINT '[=== End of Emergency Diagnostic ===]';
