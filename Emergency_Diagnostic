@@ -1,0 +1,277 @@
+
+SET NOCOUNT ON;
+PRINT '=== SQL Server Emergency Diagnostic Script ===';
+PRINT N'📊 Generating Report...';
+
+-- Instance Info
+SELECT
+    'INSTANCE NAME ' + 
+    @@SERVERNAME + 
+    ' | Last SQL Restart: ' + 
+    CONVERT(VARCHAR, sqlserver_start_time, 120) + 
+    ' | UPTIME: ' + 
+    CAST(DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) / 86400 AS VARCHAR) + ' days, ' +
+    CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 86400) / 3600 AS VARCHAR) + ' hours, ' +
+    CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 3600) / 60 AS VARCHAR) + ' minutes'
+FROM sys.dm_os_sys_info;
+
+PRINT '===========================================================================================';
+
+-- 1. Availability Group Health
+PRINT '[--- Availability Group Health ---]';
+IF EXISTS (
+    SELECT 1 FROM sys.dm_hadr_availability_replica_states WHERE role_desc = 'PRIMARY'
+)
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM sys.dm_hadr_database_replica_states
+        WHERE synchronization_state_desc <> 'SYNCHRONIZED'
+           OR log_send_queue_size > 10000
+           OR redo_queue_size > 10000
+    )
+    BEGIN
+        PRINT N'⚠️ Issue: One or more replicas are not synchronized or have large queues.';
+        PRINT '--> Fix: Check network latency, disk I/O, and replica health. Consider failover or re-seeding.';
+
+        SELECT 
+            ag.name AS AG_Name,
+            ar.replica_server_name,
+            d.name AS DatabaseName,
+            drs.synchronization_state_desc,
+            drs.log_send_queue_size,
+            drs.redo_queue_size,
+            drs.suspend_reason_desc
+        FROM sys.availability_groups ag
+        JOIN sys.availability_replicas ar ON ag.group_id = ar.group_id
+        JOIN sys.dm_hadr_database_replica_states drs ON ar.replica_id = drs.replica_id
+        JOIN sys.databases d ON drs.database_id = d.database_id;
+    END
+    ELSE
+    BEGIN
+        PRINT '--> AG Health OK: All replicas synchronized and queues within normal range.';
+    END
+END
+ELSE
+BEGIN
+    PRINT '--> Skipped: This instance is not AG PRIMARY.';
+END
+
+-- 2. Blocking Sessions
+PRINT '[--- Blocking Sessions ---]';
+IF EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
+BEGIN
+    PRINT N'⚠️ Issue: Blocking detected.';
+    PRINT '--> Fix: Identify root blocker. If safe, kill session or tune query/index.';
+
+    SELECT 
+        r.session_id,
+        r.blocking_session_id,
+        r.wait_type,
+        r.wait_time,
+        t.text AS sql_text
+    FROM sys.dm_exec_requests r
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
+    WHERE r.blocking_session_id <> 0;
+END
+ELSE
+BEGIN
+    PRINT '--> No blocking sessions detected.';
+END
+
+-- 3. Failed Agent Jobs
+PRINT '[--- Failed SQL Agent Jobs (Last 24h) ---]';
+IF EXISTS (
+    SELECT 1
+    FROM msdb.dbo.sysjobhistory h
+    WHERE h.run_status <> 1
+    AND CONVERT(DATETIME, CAST(h.run_date AS CHAR(8)), 112) >= DATEADD(DAY, -1, GETDATE())
+)
+BEGIN
+    PRINT N'⚠️ Issue: One or more jobs failed in the last 24 hours.';
+    PRINT '--> Fix: Review job history, check credentials, permissions, and resource availability.';
+
+    SELECT 
+        SUBSTRING(j.name,1,40) AS JobName,
+        h.run_date,
+        h.run_time,
+        h.message
+    FROM msdb.dbo.sysjobhistory h
+    JOIN msdb.dbo.sysjobs j ON h.job_id = j.job_id
+    WHERE h.run_status <> 1
+    AND CONVERT(DATETIME, CAST(h.run_date AS CHAR(8)), 112) >= DATEADD(DAY, -1, GETDATE());
+END
+ELSE
+BEGIN
+    PRINT '--> All SQL Agent jobs succeeded in the last 24 hours.';
+END
+
+-- 4. Error Log Summary
+PRINT '[--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
+
+-- Create temp table
+CREATE TABLE #ErrorLog (
+    LogDate DATETIME,
+    ProcessInfo NVARCHAR(255),
+    Textdata NVARCHAR(MAX)
+);
+
+-- Insert all error log entries
+INSERT INTO #ErrorLog
+EXEC xp_readerrorlog 0, 1, NULL, NULL, NULL, NULL, N'desc';
+
+-- Select top 100 excluding successful logons
+SELECT TOP 100 
+LogDate,
+'' AS '-',
+SUBSTRING(ProcessInfo,1,10)AS ProcessInfo,
+Textdata
+FROM #ErrorLog
+WHERE Textdata NOT LIKE '%Login succeeded%'
+  AND Textdata NOT LIKE '%Login successful%'
+ORDER BY LogDate DESC;
+
+DROP TABLE #ErrorLog;
+
+PRINT N'⚠️ Review above for repeated or critical errors. Investigate login failures, AG issues, or I/O errors.';
+
+-- 5. Disk Space
+PRINT '[--- Disk Space ---]';
+SELECT DISTINCT
+    CAST(SUBSTRING(ISNULL(volume_mount_point,''),1,30) AS NVARCHAR(30)) AS Mount_Point,
+    CAST(total_bytes / 1024.0 / 1024 /1024 AS DECIMAL(18,2)) AS Total_GB,
+    CAST(available_bytes / 1024.0 / 1024 /1024 AS DECIMAL(18,2)) AS Available_GB,
+    CAST(
+        ISNULL(
+            ROUND(available_bytes * 100.0 / NULLIF(total_bytes, 0), 2),
+            0
+        ) AS DECIMAL(5,2)
+    ) AS Percent_Available
+FROM
+    sys.master_files AS f
+CROSS APPLY
+    sys.dm_os_volume_stats(f.database_id, f.file_id)
+ORDER BY
+    mount_point;
+PRINT N'⚠️ Fix: Ensure sufficient free space on drives hosting DB files. Archive old data or expand volumes if needed.';
+
+-- 6. Database Status
+PRINT '[--- Database Status ---]';
+IF EXISTS (
+    SELECT 1 FROM sys.databases WHERE state_desc <> 'ONLINE'
+)
+BEGIN
+    PRINT N'⚠️ Issue: One or more databases are not ONLINE.';
+    PRINT '--> Fix: Check for recovery issues, corruption, or intentional offline status.';
+
+    SELECT name, state_desc FROM sys.databases WHERE state_desc <> 'ONLINE';
+END
+ELSE
+BEGIN
+    PRINT '--> All databases are ONLINE.';
+END
+
+-- 7. Top Waits
+PRINT '[--- Top Waits ---]';
+SELECT TOP 5 
+    wait_type, 
+    wait_time_ms / 1000.0 AS wait_sec,
+    waiting_tasks_count,
+    signal_wait_time_ms / 1000.0 AS signal_wait_sec
+FROM sys.dm_os_wait_stats
+WHERE wait_type NOT IN (
+    'SLEEP_TASK', 'BROKER_TASK_STOP', 'SQLTRACE_BUFFER_FLUSH', 'CLR_SEMAPHORE',
+    'LAZYWRITER_SLEEP', 'RESOURCE_QUEUE', 'XE_TIMER_EVENT', 'XE_DISPATCHER_WAIT'
+)
+ORDER BY wait_time_ms DESC;
+PRINT '--> Review top waits above. Investigate high waits like PAGEIOLATCH (disk I/O), CXPACKET (parallelism), or SOS_SCHEDULER_YIELD (CPU pressure).';
+
+-- 8. TempDB Usage
+PRINT '[--- TempDB Usage ---]';
+DECLARE @UserObjectsKB INT, @VersionStoreKB INT;
+
+SELECT 
+    @UserObjectsKB = ISNULL(SUM(user_object_reserved_page_count), 0) * 8,
+    @VersionStoreKB = ISNULL(SUM(version_store_reserved_page_count), 0) * 8
+FROM sys.dm_db_file_space_usage;
+
+IF @UserObjectsKB > 500000 OR @VersionStoreKB > 500000
+BEGIN
+    PRINT N'⚠️ Warning: TempDB usage is high.';
+    PRINT '--> Fix: Investigate session usage, versioning, or workload. Consider multiple files and trace flags -T1117 -T1118.';
+END
+ELSE
+BEGIN
+    PRINT '--> TempDB usage is within normal range.';
+END
+
+SELECT 
+    ISNULL(SUM(user_object_reserved_page_count), 0) * 8 AS UserObjectsKB,
+    ISNULL(SUM(internal_object_reserved_page_count), 0) * 8 AS InternalObjectsKB,
+    ISNULL(SUM(version_store_reserved_page_count), 0) * 8 AS VersionStoreKB,
+    ISNULL(SUM(unallocated_extent_page_count), 0) * 8 AS FreeSpaceKB
+FROM sys.dm_db_file_space_usage;
+
+-- 9. CPU & Memory Pressure
+PRINT '[--- CPU & Memory Pressure ---]';
+SELECT 
+    total_physical_memory_kb / 1024 AS TotalMemoryMB,
+    available_physical_memory_kb / 1024 AS AvailableMemoryMB,
+    system_memory_state_desc
+FROM sys.dm_os_sys_memory;
+
+-- 10. Page Life Expectancy
+PRINT '[--- Page Life Expectancy ---]';
+DECLARE @PLE INT;
+
+SELECT @PLE = cntr_value
+FROM sys.dm_os_performance_counters
+WHERE object_name LIKE '%Buffer Manager%'
+  AND counter_name = 'Page life expectancy';
+
+PRINT 'Current Page Life Expectancy: ' + CAST(@PLE AS VARCHAR);
+
+IF @PLE < 500
+BEGIN
+    PRINT N'⚠️ Warning: Page Life Expectancy is below 500.';
+    PRINT '--> Fix: Investigate memory pressure, buffer pool churn, or large query workloads. Consider reviewing memory settings and query patterns.';
+END
+ELSE
+BEGIN
+    PRINT '--> Page Life Expectancy is within acceptable range.';
+END
+
+-- Top CPU Consumers
+SELECT TOP 5 
+    total_worker_time / 1000 AS CPU_ms,
+    execution_count,
+    text
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle)
+ORDER BY total_worker_time DESC;
+
+PRINT '--> Review memory state and top CPU consumers. Tune expensive queries or add indexes if needed.';
+
+-- 11. Long-running Queries
+PRINT '[--- Long-running Queries (>5 min) ---]';
+IF EXISTS (
+    SELECT 1 FROM sys.dm_exec_requests WHERE total_elapsed_time > 300000
+)
+BEGIN
+    PRINT N'⚠️ Issue: Long-running queries detected.';
+    PRINT '--> Fix: Review execution plans, indexes, and blocking. Consider query rewrite or resource tuning.';
+
+    SELECT 
+        r.session_id,
+        r.total_elapsed_time / 1000 AS ElapsedSec,
+        t.text AS sql_text
+    FROM sys.dm_exec_requests r
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
+    WHERE r.total_elapsed_time > 300000;
+END
+ELSE
+BEGIN
+    PRINT '--> No long-running queries over 5 minutes.';
+END
+
+PRINT '[=== End of Emergency Diagnostic ===]';
