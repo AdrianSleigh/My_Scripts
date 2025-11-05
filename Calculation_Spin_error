@@ -1,0 +1,68 @@
+--[191] Warning [1]: Possible date calculation spin for Schedule SQL Agent error
+/*When SQL Server Agent evaluates a job schedule:
+
+It starts from the active_start_date and calculates forward to find the next valid run time.
+If the start date is very old and the schedule is complex (e.g., runs every few seconds or has multiple constraints), the calculation can become computationally expensive.
+This can lead to a loop or delay — referred to as a "spin" — where the Agent struggles to resolve the next run time efficiently.
+*/
+
+----LOOK FOR OLD DATES
+
+USE msdb;
+GO
+
+PRINT '[--- SQL Agent Job Schedule Audit ---]';
+
+SELECT 
+    s.schedule_id,
+    s.name AS ScheduleName,
+    j.name AS JobName,
+    s.enabled,
+    s.freq_type,
+    CASE s.freq_type
+        WHEN 1 THEN 'Once'
+        WHEN 4 THEN 'Daily'
+        WHEN 8 THEN 'Weekly'
+        WHEN 16 THEN 'Monthly'
+        WHEN 32 THEN 'Monthly Relative'
+        WHEN 64 THEN 'When SQL Server Agent Starts'
+        WHEN 128 THEN 'Start whenever CPUs become idle'
+        ELSE 'Other'
+    END AS FrequencyType,
+    s.freq_interval,
+    s.freq_subday_type,
+    s.freq_subday_interval,
+    s.active_start_date,
+    s.active_start_time,
+    s.active_end_date,
+    s.active_end_time,
+    DATEDIFF(DAY, CAST(CAST(s.active_start_date AS CHAR(8)) AS DATE), GETDATE()) AS DaysSinceStart,
+    CASE 
+        WHEN s.freq_subday_type IN (2, 4) AND s.freq_subday_interval < 10 THEN '⚠️ High-frequency schedule'
+        WHEN s.active_start_date < CAST(CONVERT(CHAR(8), GETDATE()-365, 112) AS INT) THEN '⚠️ Old start date'
+        ELSE ''
+    END AS Warning
+FROM msdb.dbo.sysschedules s
+LEFT JOIN msdb.dbo.sysjobschedules js ON s.schedule_id = js.schedule_id
+LEFT JOIN msdb.dbo.sysjobs j ON js.job_id = j.job_id
+ORDER BY s.schedule_id;
+
+
+--- FIX OLD DATES TO TODAYS DATE
+/*
+USE msdb;
+GO
+
+-- Update all schedules with active_start_date older than 1 year
+DECLARE @NewStartDate INT = CONVERT(INT, CONVERT(CHAR(8), GETDATE(), 112));
+
+UPDATE dbo.sysschedules
+SET active_start_date = @NewStartDate
+WHERE active_start_date < CONVERT(INT, CONVERT(CHAR(8), GETDATE()-365, 112));
+
+-- Optional: Verify changes
+SELECT schedule_id, name, active_start_date
+FROM dbo.sysschedules
+WHERE active_start_date = @NewStartDate;
+
+*/
