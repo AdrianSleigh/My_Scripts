@@ -1,13 +1,31 @@
-/*Adrian Sleigh 13/10/25
-The script analyzes query performance metrics from SQL Server's dynamic management
-views and assigns a complexity score (1–5) to each database based on:
-CPU usage
-Query duration
-Logical reads
-Query length
+/*  Adrian Sleigh 05/11/25
+    Script: Database Query Complexity Trend Analysis
 
+    Description:
+    This script analyzes query performance metrics across all databases and assigns a complexity score based on five key indicators:
+    - Average CPU time per query
+    - Average duration per query
+    - Average logical reads per query
+    - Average query text length
+    - Average estimated plan cost
+
+    Each metric is normalized into a score between 0.2 and 1.0 based on predefined thresholds.
+    The total raw score is the sum of these five normalized values, ranging from 1.0 to 5.0.
+
+    Complexity Score Mapping:
+    - Raw score ≤ 1.49 → Complexity Score = 1 (Very Low)
+    - Raw score 1.50–2.49 → Complexity Score = 2 (Low)
+    - Raw score 2.50–3.49 → Complexity Score = 3 (Moderate)
+    - Raw score 3.50–4.49 → Complexity Score = 4 (High)
+    - Raw score ≥ 4.50 → Complexity Score = 5 (Very High)
+
+    Notes:
+    - NULL values in query plan cost or other metrics are handled using COALESCE to avoid aggregation warnings.
+    - The script uses dynamic management views to extract query statistics and plan cost estimates.
 */
--- Create temp table
+SET NOCOUNT ON
+
+-- Drop temp table if exists
 IF OBJECT_ID('tempdb..#databasecomplexitytrend') IS NOT NULL
     DROP TABLE #databasecomplexitytrend;
 
@@ -38,34 +56,35 @@ PlanCost AS (
         avg_duration,
         avg_reads,
         query_length,
-        plan_xml.value('(/ShowPlanXML/BatchSequence/Batch/Statements/StmtSimple/@StatementSubTreeCost)[1]', 'float') AS plan_cost
+        TRY_CAST(plan_xml.value('(/ShowPlanXML/BatchSequence/Batch/Statements/StmtSimple/@StatementSubTreeCost)[1]', 'float') AS FLOAT) AS plan_cost
     FROM QueryStats
+    WHERE plan_xml IS NOT NULL
 ),
 Aggregated AS (
     SELECT 
         databasename,
-        AVG(avg_cpu) AS avg_cpu,
-        AVG(avg_duration) AS avg_duration,
-        AVG(avg_reads) AS avg_reads,
-        AVG(query_length) AS avg_length,
-        AVG(plan_cost) AS avg_plan_cost
+        AVG(COALESCE(avg_cpu, 0)) AS avg_cpu,
+        AVG(COALESCE(avg_duration, 0)) AS avg_duration,
+        AVG(COALESCE(avg_reads, 0)) AS avg_reads,
+        AVG(COALESCE(query_length, 0)) AS avg_length,
+        AVG(COALESCE(plan_cost, 0)) AS avg_plan_cost
     FROM PlanCost
     GROUP BY databasename
 ),
 Scored AS (
     SELECT 
         d.name AS databasename,
-        ISNULL(a.avg_cpu, 0) AS avg_cpu,
-        ISNULL(a.avg_duration, 0) AS avg_duration,
-        ISNULL(a.avg_reads, 0) AS avg_reads,
-        ISNULL(a.avg_length, 0) AS avg_length,
-        ISNULL(a.avg_plan_cost, 0) AS avg_plan_cost,
+        COALESCE(a.avg_cpu, 0) AS avg_cpu,
+        COALESCE(a.avg_duration, 0) AS avg_duration,
+        COALESCE(a.avg_reads, 0) AS avg_reads,
+        COALESCE(a.avg_length, 0) AS avg_length,
+        COALESCE(a.avg_plan_cost, 0) AS avg_plan_cost,
         (
-            CASE WHEN ISNULL(a.avg_cpu, 0) < 100 THEN 0.2 WHEN a.avg_cpu < 500 THEN 0.4 WHEN a.avg_cpu < 1000 THEN 0.6 WHEN a.avg_cpu < 2000 THEN 0.8 ELSE 1.0 END +
-            CASE WHEN ISNULL(a.avg_duration, 0) < 100 THEN 0.2 WHEN a.avg_duration < 500 THEN 0.4 WHEN a.avg_duration < 1000 THEN 0.6 WHEN a.avg_duration < 2000 THEN 0.8 ELSE 1.0 END +
-            CASE WHEN ISNULL(a.avg_reads, 0) < 1000 THEN 0.2 WHEN a.avg_reads < 5000 THEN 0.4 WHEN a.avg_reads < 10000 THEN 0.6 WHEN a.avg_reads < 20000 THEN 0.8 ELSE 1.0 END +
-            CASE WHEN ISNULL(a.avg_length, 0) < 100 THEN 0.2 WHEN a.avg_length < 500 THEN 0.4 WHEN a.avg_length < 1000 THEN 0.6 WHEN a.avg_length < 2000 THEN 0.8 ELSE 1.0 END +
-            CASE WHEN ISNULL(a.avg_plan_cost, 0) < 0.5 THEN 0.2 WHEN a.avg_plan_cost < 1 THEN 0.4 WHEN a.avg_plan_cost < 2 THEN 0.6 WHEN a.avg_plan_cost < 5 THEN 0.8 ELSE 1.0 END
+            CASE WHEN COALESCE(a.avg_cpu, 0) < 100 THEN 0.2 WHEN a.avg_cpu < 500 THEN 0.4 WHEN a.avg_cpu < 1000 THEN 0.6 WHEN a.avg_cpu < 2000 THEN 0.8 ELSE 1.0 END +
+            CASE WHEN COALESCE(a.avg_duration, 0) < 100 THEN 0.2 WHEN a.avg_duration < 500 THEN 0.4 WHEN a.avg_duration < 1000 THEN 0.6 WHEN a.avg_duration < 2000 THEN 0.8 ELSE 1.0 END +
+            CASE WHEN COALESCE(a.avg_reads, 0) < 1000 THEN 0.2 WHEN a.avg_reads < 5000 THEN 0.4 WHEN a.avg_reads < 10000 THEN 0.6 WHEN a.avg_reads < 20000 THEN 0.8 ELSE 1.0 END +
+            CASE WHEN COALESCE(a.avg_length, 0) < 100 THEN 0.2 WHEN a.avg_length < 500 THEN 0.4 WHEN a.avg_length < 1000 THEN 0.6 WHEN a.avg_length < 2000 THEN 0.8 ELSE 1.0 END +
+            CASE WHEN COALESCE(a.avg_plan_cost, 0) < 0.5 THEN 0.2 WHEN a.avg_plan_cost < 1 THEN 0.4 WHEN a.avg_plan_cost < 2 THEN 0.6 WHEN a.avg_plan_cost < 5 THEN 0.8 ELSE 1.0 END
         ) AS raw_score
     FROM sys.databases d
     LEFT JOIN Aggregated a ON d.name = a.databasename
@@ -89,5 +108,12 @@ SELECT
     END
 FROM Scored;
 
--- Optional: View results
-SELECT * FROM #databasecomplexitytrend;
+-- View results
+SELECT 
+SUBSTRING(DatabaseName,1,40) AS DatabaseName,
+Raw_Score,
+query_complexity_score
+ FROM #databasecomplexitytrend;
+
+ IF OBJECT_ID('tempdb..#databasecomplexitytrend') IS NOT NULL
+    DROP TABLE #databasecomplexitytrend;
