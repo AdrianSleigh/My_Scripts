@@ -1,0 +1,130 @@
+-- =============================================
+-- Recent Changes to SQL Server Instance & Databases
+-- =============================================
+-- Uses: Default trace, system views, DMVs
+-- =============================================
+---SELECT * FROM sys.traces WHERE is_default = 1;
+-- 1. Recent DDL Changes (from default trace)
+SET NOCOUNT ON
+PRINT N'📊 Generating Report...';
+-- =============================================
+-- DDL Change Detection (Last 7 Days)
+-- =============================================
+
+DECLARE @ddl_count INT;
+
+-- Count DDL events in the last 7 days
+SELECT @ddl_count = COUNT(*)
+FROM fn_trace_gettable(CONVERT(VARCHAR(255), 
+    (SELECT TOP 1 value 
+     FROM sys.fn_trace_getinfo(NULL) 
+     WHERE property = 2)), DEFAULT) T
+WHERE T.EventClass IN (46,47,164) -- Object:Created,Deleted,Altered
+  AND T.StartTime >= DATEADD(DAY, -7, GETDATE());
+
+-- Conditional output
+IF @ddl_count > 0
+BEGIN
+    PRINT N'⚠️ Recent DDL Changes (Last 7 Days)';
+    SELECT 
+        SUBSTRING(TE.name,1,30) AS EventName,
+        SUBSTRING(T.DatabaseName,1,30) AS DatabaseName,
+        SUBSTRING(T.ObjectName,1,30) AS ObjectName,
+        T.ObjectType,
+        T.TextData,
+        SUBSTRING(T.LoginName,1,40) AS LoginName,
+        SUBSTRING(T.HostName,1,40) AS HostName,
+        SUBSTRING(T.ApplicationName,1,40) AS ApplicationName,
+        T.StartTime
+    FROM fn_trace_gettable(CONVERT(VARCHAR(255), 
+        (SELECT TOP 1 value 
+         FROM sys.fn_trace_getinfo(NULL) 
+         WHERE property = 2)), DEFAULT) T
+    JOIN sys.trace_events TE ON T.EventClass = TE.trace_event_id
+    WHERE T.EventClass IN (46,47,164)
+      AND T.StartTime >= DATEADD(DAY, -7, GETDATE())
+    ORDER BY T.StartTime DESC;
+END
+ELSE
+BEGIN
+    PRINT '--> No DDL Changes found in the last 7 Days';
+END
+
+-- 2. Recently Modified Objects
+
+IF EXISTS (
+    SELECT 1 
+    FROM sys.objects 
+    WHERE modify_date >= DATEADD(DAY, -7, GETDATE())
+)
+BEGIN
+    SELECT 
+        SUBSTRING(name, 1, 30) AS ObjectName,
+        SUBSTRING(type_desc, 1, 30) AS ObjDescription,
+        create_date,
+        modify_date
+    FROM sys.objects
+    WHERE modify_date >= DATEADD(DAY, -7, GETDATE())
+    ORDER BY modify_date DESC;
+END
+ELSE
+BEGIN
+    PRINT '--> No recent object modifications found in the last 7 days';
+END
+
+-- 3. Recent Login Creations or Changes
+
+IF EXISTS (
+    SELECT 1
+    FROM sys.server_principals
+    WHERE create_date >= DATEADD(DAY, -7, GETDATE())
+       OR modify_date >= DATEADD(DAY, -7, GETDATE())
+)
+BEGIN
+PRINT N'⚠️ Recent login creations or modifications found in the last 7 days';
+    SELECT 
+        SUBSTRING(name, 1, 40) AS LoginName,
+        SUBSTRING(type_desc, 1, 20) AS Type,
+        create_date,
+        modify_date
+    FROM sys.server_principals
+    WHERE create_date >= DATEADD(DAY, -7, GETDATE())
+       OR modify_date >= DATEADD(DAY, -7, GETDATE())
+    ORDER BY modify_date DESC;
+END
+ELSE
+BEGIN
+    PRINT '--> No recent login creations or modifications found in the last 7 days';
+END
+
+--- 4. Recent Query Store Plan Changes (if enabled)
+IF EXISTS (SELECT * FROM sys.database_query_store_options WHERE actual_state = 1)
+BEGIN
+    PRINT N'⚠️ Recent Query Store Plan Changes';
+    SELECT 
+        q.query_id,
+        qt.query_sql_text,
+        p.plan_id,
+        p.last_execution_time
+    FROM sys.query_store_query q
+    JOIN sys.query_store_query_text qt ON q.query_text_id = qt.query_text_id
+    JOIN sys.query_store_plan p ON q.query_id = p.query_id
+    WHERE p.last_execution_time >= DATEADD(DAY, -7, GETDATE())
+    ORDER BY p.last_execution_time DESC;
+END
+ELSE
+BEGIN
+    PRINT N'⚠️ Query Store is not enabled.';
+END
+/* Example to switch on
+ALTER DATABASE [YourDatabaseName]
+SET QUERY_STORE (
+    OPERATION_MODE = READ_WRITE,
+    CLEANUP_POLICY = (STALE_QUERY_THRESHOLD_DAYS = 30),
+    DATA_FLUSH_INTERVAL_SECONDS = 900,
+    MAX_STORAGE_SIZE_MB = 100,
+    INTERVAL_LENGTH_MINUTES = 60,
+    QUERY_CAPTURE_MODE = AUTO
+);
+*/
+PRINT N'📊 End of Report...';
