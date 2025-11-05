@@ -1,6 +1,6 @@
 /*  Adrian Sleigh 05/11/25
     Script: Database Query Complexity Trend Analysis
-
+-----------------------------------------------------
     Description:
     This script analyzes query performance metrics across all databases and assigns a complexity score based on five key indicators:
     - Average CPU time per query
@@ -23,6 +23,7 @@
     - NULL values in query plan cost or other metrics are handled using COALESCE to avoid aggregation warnings.
     - The script uses dynamic management views to extract query statistics and plan cost estimates.
 */
+-------------------------------------------------------------------
 SET NOCOUNT ON
 
 -- Drop temp table if exists
@@ -109,6 +110,8 @@ SELECT
 FROM Scored;
 
 -- View results
+PRINT 'Database Complexity Score'
+PRINT '-------------------------'
 SELECT 
 SUBSTRING(DatabaseName,1,40) AS DatabaseName,
 Raw_Score,
