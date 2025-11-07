@@ -1,0 +1,73 @@
+
+-- Estimate Query Store Overhead Across All User Databases
+SET NOCOUNT ON;
+
+-- Create a table to store results
+IF OBJECT_ID('tempdb..#QueryStoreEstimates') IS NOT NULL DROP TABLE #QueryStoreEstimates;
+CREATE TABLE #QueryStoreEstimates (
+    DatabaseName NVARCHAR(128),
+    TotalQueries INT,
+    DistinctPlans INT,
+    AvgCPUUsage FLOAT,
+    AvgMemoryUsageMB FLOAT,
+    AvgIOStallMB FLOAT,
+    CurrentDBSizeMB FLOAT,
+    AvailableSpaceMB FLOAT,
+    EstimatedQSSizeMB FLOAT
+);
+
+DECLARE @dbName NVARCHAR(128);
+DECLARE db_cursor CURSOR FOR
+SELECT name FROM sys.databases
+WHERE database_id > 4 AND state_desc = 'ONLINE';
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @dbName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    DECLARE @sql NVARCHAR(MAX) = '
+    USE [' + @dbName + '];
+
+    DECLARE @TotalQueries INT = (SELECT COUNT(*) FROM sys.dm_exec_query_stats);
+    DECLARE @DistinctPlans INT = (SELECT COUNT(DISTINCT query_plan_hash) FROM sys.dm_exec_query_stats);
+
+    DECLARE @AvgCPUUsage FLOAT = (
+        SELECT AVG(total_worker_time * 1.0 / execution_count)
+        FROM sys.dm_exec_query_stats
+    );
+
+    DECLARE @AvgMemoryUsageMB FLOAT = (
+        SELECT AVG((total_grant_kb * 1.0) / 1024)
+        FROM sys.dm_exec_query_stats
+    );
+
+    DECLARE @AvgIOStallMB FLOAT = (
+        SELECT AVG((total_physical_reads * 8.0) / 1024)
+        FROM sys.dm_exec_query_stats
+    );
+
+    DECLARE @CurrentDBSizeMB FLOAT, @AvailableSpaceMB FLOAT;
+    SELECT
+        @CurrentDBSizeMB = SUM(size) * 8.0 / 1024,
+        @AvailableSpaceMB = SUM(size - FILEPROPERTY(name, ''SpaceUsed'')) * 8.0 / 1024
+    FROM sys.database_files;
+
+    DECLARE @EstimatedQSSizeMB FLOAT = (@TotalQueries + @DistinctPlans) * 0.01;
+
+    INSERT INTO #QueryStoreEstimates
+    VALUES (DB_NAME(), @TotalQueries, @DistinctPlans, @AvgCPUUsage, @AvgMemoryUsageMB, @AvgIOStallMB,
+            @CurrentDBSizeMB, @AvailableSpaceMB, @EstimatedQSSizeMB);
+    ';
+
+    EXEC sp_executesql @sql;
+
+    FETCH NEXT FROM db_cursor INTO @dbName;
+END
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+-- Return the results
+SELECT * FROM #QueryStoreEstimates
+ORDER BY EstimatedQSSizeMB DESC;
