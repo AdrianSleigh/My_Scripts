@@ -2,8 +2,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 23/10/25
---Version 29.0 fixed SSIS false positive for standalone seever
+--Written By Adrian Sleigh 10/11/25
+--Version 30.0 added SSISDB report
 ---------------------------------------------------------------------------
 PRINT N'📊 Generating Report...';
 SELECT
@@ -1549,7 +1549,7 @@ DROP TABLE IF EXISTS #RSDBs;
 END
 ELSE
 BEGIN
-    PRINT 'Script is running on the SECONDARY. Skipping ----.';
+    PRINT 'No SSRS or running on the SECONDARY. Skipping ----.';
 END
 --------------------------------------------------------------
 --GET SSRS SERVERS LIST
@@ -1794,6 +1794,104 @@ BEGIN
     PRINT N'⛔ SSISDB not found';
 END
 PRINT '---------------------------';
+
+-- SSISDB REPORT
+--Adrian Sleigh 15/10/25
+-------------------------------------------------
+SET NOCOUNT ON
+PRINT 'SSISDB REPORT  '+ @@servername + CONVERT(VARCHAR(20),getdate(),120)
+PRINT '-------------------------------------------------------'
+SELECT 
+    SUBSTRING(DB_NAME(database_id),1,20) AS SSISDB_FILES,
+    size * 8 / 1024 AS SizeMB,
+	SUBSTRING(physical_name,1,90) AS PhysicalName
+ FROM sys.master_files
+WHERE DB_NAME(database_id) = 'SSISDB';
+
+-- Execution History Summary
+-- Check if any packages ran in the last 3 months
+IF EXISTS (
+    SELECT 1
+    FROM SSISDB.catalog.executions
+    WHERE start_time > DATEADD(MONTH, -3, GETDATE())
+)
+BEGIN
+    PRINT 'Packages ran in the last 3 months';
+    PRINT '---------------------------------';
+
+    SELECT 
+        TOP 100 
+        SUBSTRING(project_name, 1, 40) AS Project,
+        SUBSTRING(package_name, 1, 30) AS PackageName,
+        COUNT(*) AS ExecutionCount,
+        CONVERT(VARCHAR(20), start_time, 120) AS StartTime,
+        AVG(DATEDIFF(SECOND, start_time, end_time)) AS AvgDurationSec
+    FROM SSISDB.catalog.executions
+    WHERE start_time > DATEADD(MONTH, -3, GETDATE())
+    GROUP BY project_name, package_name, start_time
+    ORDER BY ExecutionCount DESC;
+END
+ELSE
+BEGIN
+    PRINT N'⚠️ No SSISDB packages ran in the last 3 months';
+END
+
+-- Retention Policy Check
+SELECT
+    SUBSTRING(property_name,1,30) AS Property_Name,
+    SUBSTRING(property_value,1,10)AS Property_Value
+FROM SSISDB.catalog.catalog_properties
+WHERE property_name IN ('RETENTION_WINDOW', 'OPERATION_CLEANUP_ENABLED');
+
+-- Orphaned Executions (no logs)
+-- Check for orphaned executions (executions with no operation messages)
+IF EXISTS (
+    SELECT 1
+    FROM SSISDB.catalog.executions e
+    LEFT JOIN SSISDB.catalog.operation_messages om ON e.execution_id = om.operation_id
+    WHERE om.operation_id IS NULL
+)
+BEGIN
+    SELECT 
+        'Orphaned Executions found' AS Orphaned_Executions,
+        SUBSTRING(e.project_name, 1, 50) AS Project_Name,
+        SUBSTRING(e.package_name, 1, 40) AS Package_Name,
+		CONVERT(VARCHAR(20),e.start_time,120) AS start_time,
+      	CONVERT(VARCHAR(20),e.end_time,120) AS end_time
+     
+    FROM SSISDB.catalog.executions e
+    LEFT JOIN SSISDB.catalog.operation_messages om ON e.execution_id = om.operation_id
+    WHERE om.operation_id IS NULL;
+END
+ELSE
+BEGIN
+    PRINT 'No SSISDB Orphaned Executions Found';
+END
+
+-- Old Execution Data (older than retention window)
+-- Summary count
+
+SET NOCOUNT ON
+SELECT
+    CAST(COUNT(*) AS VARCHAR) + ' packages not run in over 30 days ' AS Message
+FROM SSISDB.catalog.executions
+WHERE start_time < DATEADD(DAY, -30, GETDATE());
+
+SELECT
+    SUBSTRING(package_name, 1, 40) AS Package_Name,
+    SUBSTRING(project_name,1,40)AS Project_Name,
+    CONVERT(VARCHAR(20),start_time,120) AS start_time,
+    CONVERT(VARCHAR(20),end_time,120) AS end_time
+FROM SSISDB.catalog.executions
+--WHERE start_time < DATEADD(DAY, -30, GETDATE())
+ORDER BY start_time;
+
+----------------------------------------------------------------
+
+
+
+
+----------------------------------------------------------------
 
 -- Check for user tables in MASTER
 USE master;
@@ -2213,7 +2311,7 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'⛔ SSRS is on a SECONDARY replica. Skipping SSRS analysis.';
+    PRINT N'⛔ Skipping SSRS analysis.';
 END
 
 ------------------------------------------------------------------
@@ -2841,6 +2939,13 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
+
+
+
+
+
+
+
 
 
 
