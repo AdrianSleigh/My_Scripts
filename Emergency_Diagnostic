@@ -1,8 +1,11 @@
+
+
 ---------------------------------------
 --Emergency fault find SQL instance
 --Run in Text format for easier reading
 --Adrian Sleigh
---V3.0 Last updated 21/11/25
+--V4.0 Last updated 21/11/25
+--Added transaction log usage summary
 ---------------------------------------
 SET NOCOUNT ON;
 PRINT N'=== 📊 SQL Server Emergency Diagnostic Script ===';
@@ -113,7 +116,78 @@ BEGIN
     PRINT N'✅No blocking sessions detected.';
 END
 ------------------------------------------------------------------------
---6. Long-running Queries
+--6. Transaction Log Usage
+SET NOCOUNT ON;
+
+DECLARE @Threshold INT = 80;  -- change this to your preferred warning threshold (percent)
+
+IF OBJECT_ID('tempdb..#LogSpace') IS NOT NULL DROP TABLE #LogSpace;
+CREATE TABLE #LogSpace (
+    DatabaseName sysname,
+    LogSizeMB    DECIMAL(18,2),
+    LogUsedPct   DECIMAL(18,2),
+    Status       INT
+);
+
+-- Capture log usage for all databases
+INSERT INTO #LogSpace (DatabaseName, LogSizeMB, LogUsedPct, Status)
+EXEC ('DBCC SQLPERF(LOGSPACE)');
+
+-- Optional: Exclude offline or restoring DBs
+;WITH DbStates AS (
+    SELECT d.name, d.state
+    FROM sys.databases AS d
+)
+DELETE ls
+FROM #LogSpace AS ls
+JOIN DbStates AS ds ON ds.name = ls.DatabaseName
+WHERE ds.state <> 0;  -- keep only ONLINE databases
+PRINT '   '
+PRINT '[---Transaction Log Usage Summary---]';
+
+-- Fixed-width header
+DECLARE @Header1 NVARCHAR(200) = 'DbName                 LogSizeMB   Used%   Status';
+DECLARE @Sep    NVARCHAR(200) = REPLICATE('-',22) + ' ' + REPLICATE('-',9) + ' ' + REPLICATE('-',6) + ' ' + REPLICATE('-',6);
+PRINT @Header1;
+PRINT @Sep;
+
+-- Summary rows
+SELECT
+    CONCAT(
+        LEFT(DatabaseName + SPACE(22), 22), ' ',
+        RIGHT(SPACE(9) + CAST(LogSizeMB AS VARCHAR(9)), 9), ' ',
+        RIGHT(SPACE(6) + CAST(LogUsedPct AS VARCHAR(6)), 6), ' ',
+        RIGHT(SPACE(6) + CAST(Status AS VARCHAR(6)), 6)
+    ) AS [Log Usage]
+FROM #LogSpace
+ORDER BY LogUsedPct DESC, DatabaseName;
+
+-- Warnings for high usage
+DECLARE @WarnCount INT = 0;
+
+SELECT @WarnCount = COUNT(*)
+FROM #LogSpace
+WHERE LogUsedPct >= @Threshold;
+
+IF @WarnCount > 0
+BEGIN
+    PRINT N'⚠️--- WARNINGS ---';
+    SELECT 
+        CONCAT(
+            'WARNING: ', DatabaseName, ' log usage is ',
+            CAST(LogUsedPct AS VARCHAR(10)), '% (size ',
+            CAST(LogSizeMB AS VARCHAR(20)), ' MB). Consider log backup/checkpoint/investigate long-running transactions.'
+        ) AS [Warning]
+    FROM #LogSpace
+    WHERE LogUsedPct >= @Threshold
+    ORDER BY LogUsedPct DESC;
+END
+ELSE
+BEGIN
+    PRINT N'✅All databases are below the transaction log usage threshold.';
+END
+-------------------------------------------------------------
+--7. Long-running Queries
 PRINT '   '
 PRINT '[--- Long-running Queries (>5 min) ---]';
 
@@ -144,10 +218,10 @@ BEGIN
     PRINT N'✅No long-running queries over 5 minutes.';
 END
 --------------------------------------------------------------
---7.  Availability Group Health
+--8.  Availability Group Health
 PRINT '   '
 PRINT '[--- Availability Group Health ---]';
-PRINT '   '
+
 IF EXISTS (
     SELECT 1 FROM sys.dm_hadr_availability_replica_states WHERE role_desc = 'PRIMARY'
 )
@@ -189,7 +263,7 @@ BEGIN
     PRINT 'Skipped: This instance is not AG PRIMARY.';
 END
 ------------------------------------------------------------------------------------
---8.DiskSpace
+--9. DiskSpace
 SET NOCOUNT ON
 PRINT '   ';
 PRINT '[--- Disk Space ---]';
@@ -253,7 +327,7 @@ IF @CriticalCount = 0 AND @WarningCount = 0
     PRINT '   ';
 Drop table #DiskInfo
 ---------------------------------------------------------------------------------------------------
-----9.failed jobs
+---10. Failed Jobs
 DECLARE @Since DATETIME = DATEADD(DAY, -1, GETDATE());
 
 IF EXISTS (
@@ -302,7 +376,7 @@ BEGIN
     PRINT N'✅All SQL Agent jobs succeeded in the last 24 hours.';
 END
 ------------------------------------------------------------------------
---10.Error Log Summary
+--11. Error Log Summary
 PRINT '[--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
 
 -- Create temp table
@@ -332,7 +406,7 @@ PRINT '   '
 PRINT N'⚠️ Review above for repeated or critical errors. Investigate login failures, AG issues, or I/O errors.';
 -------------------------------------------------------
 
---11.Database Status
+--12. Database Status
 PRINT '   '
 PRINT '[--- Database Status ---]';
 IF EXISTS (
@@ -354,7 +428,7 @@ BEGIN
     PRINT N'✅All databases are ONLINE.';
 END
 
---12.Wait issues
+--13. Wait issues
 SET NOCOUNT ON
 PRINT '   '
 PRINT '[--- Investigate Waits ---]';
@@ -414,7 +488,7 @@ PRINT '   '
 PRINT N'⚠️ Only waits that may indicate performance issues are shown above. Review Category and Impact for troubleshooting guidance.';
 PRINT '   '
 ---------------------------------------------------------------
---13.Check tempdb current useage
+--14. Check tempdb current useage
 SET NOCOUNT ON;
 SET ANSI_WARNINGS OFF;  -- Suppress NULL aggregate warning
 
@@ -439,7 +513,7 @@ BEGIN
 END
 SET ANSI_WARNINGS ON;   -- Restore default behavior
 ----------------------------------------------------------------------
---14.Top 10 CPU Consumers (Text-view aligned, with totals)
+--15.Top 10 CPU Consumers (Text-view aligned, with totals)
 SET NOCOUNT ON;
 PRINT '   '
 PRINT '[---Top 10 CPU Consumers---]';
@@ -575,7 +649,7 @@ SELECT
 FROM Agg;
 
 ----------------------------------------------------------------
---15.Index and Stats
+--16. Index and Stats
 
 SET NOCOUNT ON;
 IF OBJECT_ID('tempdb..#IndexStats') IS NOT NULL DROP TABLE #IndexStats;
@@ -661,5 +735,5 @@ FROM #IndexStats
 WHERE LastIndexStatsUpdate IS NOT NULL
 ORDER BY LastIndexStatsUpdate ASC;
 DROP TABLE #IndexStats
-PRINT '[=== End of Emergency Diagnostic ===]';
 
+PRINT '[=== End of Emergency Diagnostic ===]';
