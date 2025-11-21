@@ -509,7 +509,7 @@ END
 ELSE
 BEGIN 
   PRINT '[--- Tempdb Usage ---]   '
-  PRINT N'⚠️TEMPDB IS NOT CURRENLTY IN USE!'
+  PRINT N'⚠️TEMPDB IS NOT CURRENTLY IN USE!'
 END
 SET ANSI_WARNINGS ON;   -- Restore default behavior
 ----------------------------------------------------------------------
