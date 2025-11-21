@@ -1,7 +1,8 @@
-
+---------------------------------------
 --Emergency fault find SQL instance
 --Run in Text format for easier reading
---V1.0 
+--Adrian Sleigh
+--V3.0 Last updated 21/11/25
 ---------------------------------------
 SET NOCOUNT ON;
 PRINT N'=== 📊 SQL Server Emergency Diagnostic Script ===';
@@ -411,7 +412,7 @@ WHERE ws.wait_type NOT IN (SELECT wait_type FROM ExcludedWaits)
 ORDER BY ws.wait_time_ms DESC;
 PRINT '   '
 PRINT N'⚠️ Only waits that may indicate performance issues are shown above. Review Category and Impact for troubleshooting guidance.';
-
+PRINT '   '
 ---------------------------------------------------------------
 --13.Check tempdb current useage
 SET NOCOUNT ON;
@@ -424,6 +425,7 @@ FROM sys.dm_db_file_space_usage;
 
 IF @PagesUsed > 0
 BEGIN
+    PRINT '   '
     PRINT '[---TempDB User Object Usage---]';
     SELECT 
         ISNULL(SUM(user_object_reserved_page_count), 0) AS [UserObjectPagesUsed],
@@ -432,7 +434,7 @@ BEGIN
 END
 ELSE
 BEGIN 
-  PRINT '[---Tempdb Usage---]   '
+  PRINT '[--- Tempdb Usage ---]   '
   PRINT N'⚠️TEMPDB IS NOT CURRENLTY IN USE!'
 END
 SET ANSI_WARNINGS ON;   -- Restore default behavior
@@ -659,8 +661,5 @@ FROM #IndexStats
 WHERE LastIndexStatsUpdate IS NOT NULL
 ORDER BY LastIndexStatsUpdate ASC;
 DROP TABLE #IndexStats
-
-
 PRINT '[=== End of Emergency Diagnostic ===]';
-
 
