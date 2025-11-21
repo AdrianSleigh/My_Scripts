@@ -1,13 +1,12 @@
 
-
 --Emergency fault find SQL instance
 --Run in Text format for easier reading
---V1.0 105/11/2025
+--V1.0 01/11/2025
 ---------------------------------------
 SET NOCOUNT ON;
 PRINT N'=== 📊 SQL Server Emergency Diagnostic Script ===';
 
--- Instance Info
+--1. Instance Info
 SELECT
     'INSTANCE NAME ' + 
     @@SERVERNAME + 
@@ -18,8 +17,36 @@ SELECT
     CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 86400) / 3600 AS VARCHAR) + ' hours, ' +
     CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 3600) / 60 AS VARCHAR) + ' minutes'
 FROM sys.dm_os_sys_info;
-
--- Page Life Expectancy
+------------------------------------------------
+--2. DMV-based simplified sp_who2 with ProgramName, Blocking Info, excluding system and SA
+PRINT '[--- Current Connections ---]';
+SELECT 
+    s.session_id AS [SPID],
+    s.status,
+   SUBSTRING(s.login_name,1,30) AS [Login],
+   SUBSTRING(s.host_name,1,30) AS [HostName],
+   SUBSTRING(DB_NAME(r.database_id),1,30) AS [DBName],
+    r.command AS [Command],
+    r.cpu_time AS [CPUTime],
+    r.reads + r.writes AS [DiskIO],
+    s.last_request_end_time AS [LastBatch],
+   SUBSTRING(s.program_name,1,70) AS [ProgramName],
+    r.blocking_session_id AS [BlockedBy],
+    CASE 
+        WHEN EXISTS (
+            SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id = s.session_id
+        ) THEN 'Yes' ELSE 'No'
+    END AS [IsBlockingOthers]
+FROM sys.dm_exec_sessions AS s
+LEFT JOIN sys.dm_exec_requests AS r ON s.session_id = r.session_id
+WHERE s.session_id <> @@SPID
+  AND s.is_user_process = 1              -- Exclude system sessions
+  AND s.login_name <> 'NT AUTHORITY\SYSTEM'
+  AND s.login_name <> 'sa'               -- SA
+  AND s.login_name <> 'moxireader'       -- Excludes
+ORDER BY r.cpu_time DESC;
+----------------------------------------------------------------
+--3. Page Life Expectancy
 SET NOCOUNT ON
 DECLARE @PLE INT;
 
@@ -51,7 +78,7 @@ BEGIN
 END
 ------------------------------------------------------------------
 
--- CPU Pressure
+--4. CPU Pressure
 PRINT '   '
 PRINT '[--- CPU Pressure ---]';
 SELECT 
@@ -61,7 +88,7 @@ SELECT
 FROM sys.dm_os_sys_memory;
 ------------------------------------------------------------------
 
--- Blocking Sessions
+--5. Blocking Sessions
 PRINT '[--- Blocking Sessions ---]';
 IF EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
 BEGIN 
@@ -85,7 +112,7 @@ BEGIN
     PRINT N'✅No blocking sessions detected.';
 END
 ------------------------------------------------------------------------
--- Long-running Queries
+--6. Long-running Queries
 PRINT '   '
 PRINT '[--- Long-running Queries (>5 min) ---]';
 
@@ -116,7 +143,7 @@ BEGIN
     PRINT N'✅No long-running queries over 5 minutes.';
 END
 --------------------------------------------------------------
---  Availability Group Health
+--7.  Availability Group Health
 PRINT '   '
 PRINT '[--- Availability Group Health ---]';
 PRINT '   '
@@ -161,7 +188,7 @@ BEGIN
     PRINT 'Skipped: This instance is not AG PRIMARY.';
 END
 ------------------------------------------------------------------------------------
---DiskSpace
+--8.DiskSpace
 SET NOCOUNT ON
 PRINT '   ';
 PRINT '[--- Disk Space ---]';
@@ -225,7 +252,7 @@ IF @CriticalCount = 0 AND @WarningCount = 0
     PRINT '   ';
 Drop table #DiskInfo
 ---------------------------------------------------------------------------------------------------
-----failed jobs
+----9.failed jobs
 DECLARE @Since DATETIME = DATEADD(DAY, -1, GETDATE());
 
 IF EXISTS (
@@ -274,7 +301,7 @@ BEGIN
     PRINT N'✅All SQL Agent jobs succeeded in the last 24 hours.';
 END
 ------------------------------------------------------------------------
--- Error Log Summary
+--10.Error Log Summary
 PRINT '[--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
 
 -- Create temp table
@@ -304,7 +331,7 @@ PRINT '   '
 PRINT N'⚠️ Review above for repeated or critical errors. Investigate login failures, AG issues, or I/O errors.';
 -------------------------------------------------------
 
--- Database Status
+--11.Database Status
 PRINT '   '
 PRINT '[--- Database Status ---]';
 IF EXISTS (
@@ -326,7 +353,7 @@ BEGIN
     PRINT N'✅All databases are ONLINE.';
 END
 
--- Wait issues
+--12.Wait issues
 SET NOCOUNT ON
 PRINT '   '
 PRINT '[--- Investigate Waits ---]';
@@ -386,8 +413,32 @@ PRINT '   '
 PRINT N'⚠️ Only waits that may indicate performance issues are shown above. Review Category and Impact for troubleshooting guidance.';
 
 ---------------------------------------------------------------
+--13.
+--Check tempdb current useage
+SET NOCOUNT ON;
+SET ANSI_WARNINGS OFF;  -- Suppress NULL aggregate warning
 
--- Top 10 CPU Consumers (Text-view aligned, with totals)
+DECLARE @PagesUsed BIGINT;
+
+SELECT @PagesUsed = ISNULL(SUM(user_object_reserved_page_count), 0)
+FROM sys.dm_db_file_space_usage;
+
+IF @PagesUsed > 0
+BEGIN
+    PRINT '[---TempDB User Object Usage---]';
+    SELECT 
+        ISNULL(SUM(user_object_reserved_page_count), 0) AS [UserObjectPagesUsed],
+        (ISNULL(SUM(user_object_reserved_page_count), 0) * 1.0 / 128) AS [UserObjectSpaceMB]
+    FROM sys.dm_db_file_space_usage;
+END
+ELSE
+BEGIN 
+  PRINT '   '
+  PRINT N'⚠️TEMPDB IS NOT CURRENLTY IN USE!'
+END
+SET ANSI_WARNINGS ON;   -- Restore default behavior
+----------------------------------------------------------------------
+--14.Top 10 CPU Consumers (Text-view aligned, with totals)
 SET NOCOUNT ON;
 PRINT '   '
 PRINT '[---Top 10 CPU Consumers---]';
@@ -521,6 +572,98 @@ SELECT
         '%'
     ) AS [Summary]
 FROM Agg;
+
+----------------------------------------------------------------
+--15.Index and Stats
+--Index and Stats
+SET NOCOUNT ON;
+
+IF OBJECT_ID('tempdb..#IndexStats') IS NOT NULL DROP TABLE #IndexStats;
+CREATE TABLE #IndexStats (
+    DbName               sysname               NULL,
+    ObjectName           sysname               NULL,
+    IndexName            NVARCHAR(128)         NULL,  -- allow NULLs (heaps) or set placeholder in INSERT
+    IndexType            NVARCHAR(60)          NULL,
+    IsDisabled           bit                   NULL,
+    IsHypothetical       bit                   NULL,
+    LastIndexStatsUpdate datetime              NULL
+);
+
+DECLARE @sql nvarchar(max) = N'';
+
+-- Build dynamic SQL for all online, writable user databases using FOR XML PATH
+SELECT @sql = (
+    SELECT '
+USE ' + QUOTENAME(name) + ';
+INSERT INTO #IndexStats (DbName, ObjectName, IndexName, IndexType, IsDisabled, IsHypothetical, LastIndexStatsUpdate)
+SELECT
+    DB_NAME() AS DbName,
+    QUOTENAME(OBJECT_SCHEMA_NAME(i.object_id)) + ''.'' + QUOTENAME(OBJECT_NAME(i.object_id)) AS ObjectName,
+    CASE 
+        WHEN i.index_id = 0 THEN ''(HEAP)''
+        ELSE ISNULL(i.name, ''(Unnamed)'')
+    END AS IndexName,
+    CASE i.type
+        WHEN 0 THEN ''HEAP''
+        WHEN 1 THEN ''CLUSTERED''
+        WHEN 2 THEN ''NONCLUSTERED''
+        WHEN 3 THEN ''XML''
+        WHEN 4 THEN ''SPATIAL''
+        WHEN 5 THEN ''CLUSTERED COLUMNSTORE''
+        WHEN 6 THEN ''NONCLUSTERED COLUMNSTORE''
+        WHEN 7 THEN ''NONCLUSTERED HASH''
+        ELSE ''OTHER''
+    END AS IndexType,
+    i.is_disabled,
+    i.is_hypothetical,
+    STATS_DATE(i.object_id, i.index_id) AS LastIndexStatsUpdate
+FROM sys.indexes AS i
+WHERE i.object_id > 0
+  AND OBJECTPROPERTY(i.object_id, ''IsMsShipped'') = 0
+  AND i.index_id >= 0;
+'
+    FROM sys.databases
+    WHERE database_id > 4              -- user databases only
+      AND state = 0                    -- online
+      AND is_read_only = 0             -- writable
+    FOR XML PATH(''), TYPE
+).value('.', 'NVARCHAR(MAX)');
+
+-- Execute the dynamic SQL
+EXEC sp_executesql @sql;
+
+SET ANSI_WARNINGS OFF;
+-- Instance-wide max last index stats update
+PRINT '[Last Index Maintenance]';
+SELECT MAX(LastIndexStatsUpdate) AS InstanceLastIndexMaintenance
+FROM #IndexStats;
+SET ANSI_WARNINGS ON;
+----------------------------------------------------------------
+
+
+
+-- Per-database summary
+SELECT 
+    SUBSTRING(DbName,1,40) AS DatabaseName,
+    MAX(LastIndexStatsUpdate) AS DbLastIndexStatsUpdate,
+    SUM(CASE WHEN LastIndexStatsUpdate IS NOT NULL AND LastIndexStatsUpdate >= DATEADD(day, -1, SYSDATETIME()) THEN 1 ELSE 0 END) AS UpdatedLast24h,
+    COUNT(*) AS TotalIndexes
+FROM #IndexStats
+GROUP BY DbName
+ORDER BY DbName;
+
+-- Top 100  oldestindex maintenance (via stats updated)
+PRINT 'Oldest Index Maintenance';
+SELECT TOP 100
+    SUBSTRING(DbName,1,40)AS DatabaseName,
+    SUBSTRING(ObjectName,1,40) AS ObjectName,
+    SUBSTRING(ISNULL(IndexName, '(HEAP)'),1,40) AS IndexName,
+    LastIndexStatsUpdate
+FROM #IndexStats
+WHERE LastIndexStatsUpdate IS NOT NULL
+ORDER BY LastIndexStatsUpdate ASC;
+DROP TABLE #IndexStats
+
 
 PRINT '[=== End of Emergency Diagnostic ===]';
 
