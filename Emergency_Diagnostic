@@ -1,7 +1,7 @@
 
 --Emergency fault find SQL instance
 --Run in Text format for easier reading
---V1.0 01/11/2025
+--V1.0 
 ---------------------------------------
 SET NOCOUNT ON;
 PRINT N'=== 📊 SQL Server Emergency Diagnostic Script ===';
@@ -413,8 +413,7 @@ PRINT '   '
 PRINT N'⚠️ Only waits that may indicate performance issues are shown above. Review Category and Impact for troubleshooting guidance.';
 
 ---------------------------------------------------------------
---13.
---Check tempdb current useage
+--13.Check tempdb current useage
 SET NOCOUNT ON;
 SET ANSI_WARNINGS OFF;  -- Suppress NULL aggregate warning
 
@@ -433,7 +432,7 @@ BEGIN
 END
 ELSE
 BEGIN 
-  PRINT '   '
+  PRINT '[---Tempdb Usage---]   '
   PRINT N'⚠️TEMPDB IS NOT CURRENLTY IN USE!'
 END
 SET ANSI_WARNINGS ON;   -- Restore default behavior
@@ -575,9 +574,8 @@ FROM Agg;
 
 ----------------------------------------------------------------
 --15.Index and Stats
---Index and Stats
-SET NOCOUNT ON;
 
+SET NOCOUNT ON;
 IF OBJECT_ID('tempdb..#IndexStats') IS NOT NULL DROP TABLE #IndexStats;
 CREATE TABLE #IndexStats (
     DbName               sysname               NULL,
@@ -637,10 +635,8 @@ SET ANSI_WARNINGS OFF;
 PRINT '[Last Index Maintenance]';
 SELECT MAX(LastIndexStatsUpdate) AS InstanceLastIndexMaintenance
 FROM #IndexStats;
-SET ANSI_WARNINGS ON;
+
 ----------------------------------------------------------------
-
-
 
 -- Per-database summary
 SELECT 
@@ -651,7 +647,7 @@ SELECT
 FROM #IndexStats
 GROUP BY DbName
 ORDER BY DbName;
-
+SET ANSI_WARNINGS ON;
 -- Top 100  oldestindex maintenance (via stats updated)
 PRINT 'Oldest Index Maintenance';
 SELECT TOP 100
@@ -666,4 +662,5 @@ DROP TABLE #IndexStats
 
 
 PRINT '[=== End of Emergency Diagnostic ===]';
+
 
