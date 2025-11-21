@@ -1,7 +1,8 @@
 
+
 --Emergency fault find SQL instance
----04/11/25
----Adrian Sleigh
+--Run in Text format for easier reading
+--V1.0 105/11/2025
 ---------------------------------------
 SET NOCOUNT ON;
 PRINT N'=== 📊 SQL Server Emergency Diagnostic Script ===';
@@ -62,7 +63,6 @@ FROM sys.dm_os_sys_memory;
 
 -- Blocking Sessions
 PRINT '[--- Blocking Sessions ---]';
-PRINT '   '
 IF EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
 BEGIN 
     PRINT '   '
@@ -222,9 +222,7 @@ IF @WarningCount > 0
     PRINT N'🟠 ' + CAST(@WarningCount AS NVARCHAR(10)) + N' vol(s) 10–20% free.';
 IF @CriticalCount = 0 AND @WarningCount = 0
     PRINT N'🟢 All vols ≥ 20% free.';
- 
     PRINT '   ';
-    PRINT N'⚠️Review autogrowth, file placement, archive/purge, or expand volumes.';
 Drop table #DiskInfo
 ---------------------------------------------------------------------------------------------------
 ----failed jobs
@@ -395,7 +393,7 @@ PRINT '   '
 PRINT '[---Top 10 CPU Consumers---]';
 
 -- Fixed widths:
--- RowNo(5) | CPU_ms(12) | CPU_HHMMSS(12) | ExecCnt(9) | AvgCPU_ms(12) | %Inst(7) | QueryText(80)
+-- RowNo(5) | CPU_ms(12) | CPU_HHMMSS(12) | ExecCnt(9) | AvgCPU_ms(12) | %Inst(7) | QueryText(200)
 DECLARE @Header NVARCHAR(400) =
     'RowNo CPU_ms      CPU_HHMMSS   ExecCnt   AvgCPU_ms   %Inst  QueryText';
 DECLARE @Separator NVARCHAR(400) =
@@ -405,7 +403,7 @@ DECLARE @Separator NVARCHAR(400) =
     + REPLICATE('-',9)  + ' '
     + REPLICATE('-',12) + ' '
     + REPLICATE('-',7)  + ' '
-    + REPLICATE('-',80);
+    + REPLICATE('-',200);
 
 PRINT @Header;
 PRINT @Separator;
