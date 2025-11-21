@@ -18,10 +18,108 @@ SELECT
     CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 3600) / 60 AS VARCHAR) + ' minutes'
 FROM sys.dm_os_sys_info;
 
-PRINT '===============================================================================================================================';
+-- Page Life Expectancy
+SET NOCOUNT ON
+DECLARE @PLE INT;
 
--- 1. Availability Group Health
+SELECT @PLE = cntr_value
+FROM sys.dm_os_performance_counters
+WHERE object_name LIKE '%Buffer Manager%'
+  AND counter_name = 'Page life expectancy';
+
+PRINT '[--- Page Life Expectancy ---]';
+SELECT
+    @PLE AS PageLifeExpectancy,
+    cntr_value AS PageLifeValue,
+    RIGHT('0' + CAST(cntr_value / 3600 AS VARCHAR(10)), 2) + ':' +
+    RIGHT('0' + CAST((cntr_value % 3600) / 60 AS VARCHAR(10)), 2) + ':' +
+    RIGHT('0' + CAST(cntr_value % 60 AS VARCHAR(10)), 2) AS TimeHMS
+FROM sys.dm_os_performance_counters
+WHERE object_name LIKE '%Buffer Manager%'
+  AND counter_name = 'Page life expectancy';
+
+IF @PLE < 500
+
+BEGIN
+    PRINT N'⚠️ Warning: Page Life Expectancy is below 500.';
+    PRINT 'Investigate memory pressure, buffer pool churn, or large query workloads. Consider reviewing memory settings and query patterns.';
+END
+ELSE
+BEGIN
+    PRINT N'✅ Page Life Expectancy is within acceptable range.';
+END
+------------------------------------------------------------------
+
+-- CPU Pressure
+PRINT '   '
+PRINT '[--- CPU Pressure ---]';
+SELECT 
+    total_physical_memory_kb / 1024 AS TotalMemoryMB,
+    available_physical_memory_kb / 1024 AS AvailableMemoryMB,
+    SUBSTRING(system_memory_state_desc,1,40)AS System_Memory_Desc
+FROM sys.dm_os_sys_memory;
+------------------------------------------------------------------
+
+-- Blocking Sessions
+PRINT '[--- Blocking Sessions ---]';
+PRINT '   '
+IF EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
+BEGIN 
+    PRINT '   '
+    PRINT N'⚠️ Issue: Blocking detected.';
+    PRINT 'Identify root blocker. If safe, kill session or tune query/index.';
+
+    SELECT 
+        r.session_id,
+        r.blocking_session_id,
+        r.wait_type,
+        r.wait_time,
+        t.text AS sql_text
+    FROM sys.dm_exec_requests r
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
+    WHERE r.blocking_session_id <> 0;
+END
+ELSE
+BEGIN
+    PRINT '   '
+    PRINT N'✅No blocking sessions detected.';
+END
+------------------------------------------------------------------------
+-- Long-running Queries
+PRINT '   '
+PRINT '[--- Long-running Queries (>5 min) ---]';
+
+IF EXISTS (
+    SELECT 1
+    FROM sys.dm_exec_requests r
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
+    WHERE r.total_elapsed_time > 300000
+      AND t.text NOT LIKE '%sp_server_diagnostics%'
+)
+BEGIN
+    PRINT '   '
+    PRINT '⚠️ Long-running request detected (excluding sp_server_diagnostics).';
+
+    SELECT 
+        N'⚠️' AS LongRunningQuery,
+        r.session_id,
+        r.total_elapsed_time / 1000 AS ElapsedSec,
+        SUBSTRING(t.text, 1, 100) AS sql_text
+    FROM sys.dm_exec_requests r
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
+    WHERE r.total_elapsed_time > 300000
+      AND t.text NOT LIKE '%sp_server_diagnostics%';
+END
+ELSE
+BEGIN
+    PRINT '   '
+    PRINT N'✅No long-running queries over 5 minutes.';
+END
+--------------------------------------------------------------
+--  Availability Group Health
+PRINT '   '
 PRINT '[--- Availability Group Health ---]';
+PRINT '   '
 IF EXISTS (
     SELECT 1 FROM sys.dm_hadr_availability_replica_states WHERE role_desc = 'PRIMARY'
 )
@@ -33,9 +131,10 @@ BEGIN
            OR log_send_queue_size > 10000
            OR redo_queue_size > 10000
     )
-    BEGIN
+    BEGIN 
+	    PRINT '   '
         PRINT N'⚠️ Issue: One or more replicas are not synchronized or have large queues.';
-        PRINT '--> Fix: Check network latency, disk I/O, and replica health. Consider failover or re-seeding.';
+        PRINT 'Check network latency, disk I/O, and replica health. Consider failover or re-seeding.';
 
         SELECT 
             ag.name AS AG_Name,
@@ -52,65 +151,132 @@ BEGIN
     END
     ELSE
     BEGIN
-        PRINT '--> AG Health OK: All replicas synchronized and queues within normal range.';
+	    PRINT '   '
+        PRINT N'✅AG Health OK: All replicas synchronized and queues within normal range.';
     END
 END
 ELSE
-BEGIN
-    PRINT '--> Skipped: This instance is not AG PRIMARY.';
+BEGIN 
+    PRINT '   '
+    PRINT 'Skipped: This instance is not AG PRIMARY.';
 END
+------------------------------------------------------------------------------------
+--DiskSpace
+SET NOCOUNT ON
+PRINT '   ';
+PRINT '[--- Disk Space ---]';
 
--- 2. Blocking Sessions
-PRINT '[--- Blocking Sessions ---]';
-IF EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
-BEGIN
-    PRINT N'⚠️ Issue: Blocking detected.';
-    PRINT '--> Fix: Identify root blocker. If safe, kill session or tune query/index.';
+-- Always start fresh
+IF OBJECT_ID('tempdb..#DiskInfo') IS NOT NULL DROP TABLE #DiskInfo;
 
-    SELECT 
-        r.session_id,
-        r.blocking_session_id,
-        r.wait_type,
-        r.wait_time,
-        t.text AS sql_text
-    FROM sys.dm_exec_requests r
-    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
-    WHERE r.blocking_session_id <> 0;
-END
-ELSE
-BEGIN
-    PRINT '--> No blocking sessions detected.';
-END
+-- Compute raw values (numeric for sorting)
+SELECT DISTINCT
+    CAST(SUBSTRING(ISNULL(volume_mount_point,''), 1, 20) AS NVARCHAR(20)) AS MountPoint,
+    total_bytes     / 1024.0 / 1024 / 1024 AS TotalGB_num,
+    available_bytes / 1024.0 / 1024 / 1024 AS AvailGB_num,
+    CASE WHEN total_bytes > 0
+         THEN available_bytes * 100.0 / total_bytes
+         ELSE 0
+    END AS Pct_num
+INTO #DiskInfo
+FROM sys.master_files AS f
+CROSS APPLY sys.dm_os_volume_stats(f.database_id, f.file_id);
 
--- 3. Failed Agent Jobs
-PRINT '[--- Failed SQL Agent Jobs (Last 24h) ---]';
+-- Add severity and action (be consistent with names)
+ALTER TABLE #DiskInfo ADD Severity NVARCHAR(12) NULL, Action NVARCHAR(40) NULL;
+
+UPDATE #DiskInfo
+SET Severity =
+        CASE
+            WHEN Pct_num < 10 THEN N'🔴CRITICAL'
+            WHEN Pct_num < 20 THEN N'🟠 WARNING'
+            ELSE N'🟢 OK'
+        END,
+    Action =
+        CASE
+            WHEN Pct_num < 10 THEN N'Expand/move/archive now'
+            WHEN Pct_num < 20 THEN N'Plan expand/archive'
+            ELSE N'No action'
+        END;
+
+-- Compact display: fixed widths via STR() then LTRIM() to remove left padding
+SELECT
+    MountPoint                              AS MP,
+    LTRIM(STR(TotalGB_num, 8, 2))           AS TotGB,    -- e.g.,  ' 123.45' -> '123.45'
+    LTRIM(STR(AvailGB_num, 8, 2))           AS AvlGB,
+    LTRIM(STR(Pct_num     , 6, 2)) + N'%'   AS FreePct,  -- e.g.,  ' 12.34' -> '12.34%'
+    Severity                                AS Sev,
+    Action                                   AS Act
+FROM #DiskInfo
+ORDER BY
+    CASE WHEN Severity LIKE N'🔴%' THEN 1 WHEN Severity LIKE N'🟠%' THEN 2 ELSE 3 END,
+    Pct_num ASC;
+
+-- Summary alerts
+DECLARE @CriticalCount INT = (SELECT COUNT(*) FROM #DiskInfo WHERE Pct_num < 10);
+DECLARE @WarningCount  INT = (SELECT COUNT(*) FROM #DiskInfo WHERE Pct_num >= 10 AND Pct_num < 20);
+
+IF @CriticalCount > 0
+    PRINT N'🔴 ' + CAST(@CriticalCount AS NVARCHAR(10)) + N' vol(s) <10% free.';
+IF @WarningCount > 0
+    PRINT N'🟠 ' + CAST(@WarningCount AS NVARCHAR(10)) + N' vol(s) 10–20% free.';
+IF @CriticalCount = 0 AND @WarningCount = 0
+    PRINT N'🟢 All vols ≥ 20% free.';
+ 
+    PRINT '   ';
+    PRINT N'⚠️Review autogrowth, file placement, archive/purge, or expand volumes.';
+Drop table #DiskInfo
+---------------------------------------------------------------------------------------------------
+----failed jobs
+DECLARE @Since DATETIME = DATEADD(DAY, -1, GETDATE());
+
 IF EXISTS (
     SELECT 1
     FROM msdb.dbo.sysjobhistory h
-    WHERE h.run_status <> 1
-    AND CONVERT(DATETIME, CAST(h.run_date AS CHAR(8)), 112) >= DATEADD(DAY, -1, GETDATE())
+    WHERE h.run_status = 0
+      AND h.step_id = 0
+      AND DATETIMEFROMPARTS(h.run_date / 10000,
+                            (h.run_date % 10000) / 100,
+                            (h.run_date % 100),
+                            h.run_time / 10000,
+                            (h.run_time % 10000) / 100,
+                            (h.run_time % 100),
+                            0) >= @Since
 )
 BEGIN
+    PRINT '   '
     PRINT N'⚠️ Issue: One or more jobs failed in the last 24 hours.';
 
-SELECT
-    LEFT(j.name, 40) AS FailedJobName,
-    h.step_id,
-    h.run_date,
-    h.run_time,
-    h.message
-FROM msdb.dbo.sysjobhistory h
-JOIN msdb.dbo.sysjobs j ON h.job_id = j.job_id
-WHERE h.run_status = 0
-  AND h.run_date <= CONVERT(INT, CONVERT(CHAR(8), GETDATE()-1, 112))
-ORDER BY h.run_date DESC, h.run_time DESC;
+    SELECT
+        LEFT(j.name, 40) AS FailedJobName,
+        h.step_id,
+        DATEFROMPARTS(h.run_date / 10000,
+                      (h.run_date % 10000) / 100,
+                      (h.run_date % 100)) AS run_date_as_date,
+        TIMEFROMPARTS(h.run_time / 10000,
+                      (h.run_time % 10000) / 100,
+                      (h.run_time % 100), 0, 0) AS run_time_as_time,
+          h.message
+    FROM msdb.dbo.sysjobhistory h
+    JOIN msdb.dbo.sysjobs j ON h.job_id = j.job_id
+    WHERE h.run_status = 0
+      AND h.step_id = 0
+      AND DATETIMEFROMPARTS(h.run_date / 10000,
+                            (h.run_date % 10000) / 100,
+                            (h.run_date % 100),
+                            h.run_time / 10000,
+                            (h.run_time % 10000) / 100,
+                            (h.run_time % 100),
+                            0) >= @Since
+    ORDER BY run_time DESC;
 END
 ELSE
 BEGIN
-    PRINT '--> All SQL Agent jobs succeeded in the last 24 hours.';
+    PRINT '   '
+    PRINT N'✅All SQL Agent jobs succeeded in the last 24 hours.';
 END
-
--- 4. Error Log Summary
+------------------------------------------------------------------------
+-- Error Log Summary
 PRINT '[--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
 
 -- Create temp table
@@ -136,37 +302,20 @@ WHERE Textdata NOT LIKE '%Login succeeded%'
 ORDER BY LogDate DESC;
 
 DROP TABLE #ErrorLog;
-
+PRINT '   '
 PRINT N'⚠️ Review above for repeated or critical errors. Investigate login failures, AG issues, or I/O errors.';
+-------------------------------------------------------
 
--- 5. Disk Space
-PRINT '[--- Disk Space ---]';
-SELECT DISTINCT
-    CAST(SUBSTRING(ISNULL(volume_mount_point,''),1,30) AS NVARCHAR(30)) AS Mount_Point,
-    CAST(total_bytes / 1024.0 / 1024 /1024 AS DECIMAL(18,2)) AS Total_GB,
-    CAST(available_bytes / 1024.0 / 1024 /1024 AS DECIMAL(18,2)) AS Available_GB,
-    CAST(
-        ISNULL(
-            ROUND(available_bytes * 100.0 / NULLIF(total_bytes, 0), 2),
-            0
-        ) AS DECIMAL(5,2)
-    ) AS Percent_Available
-FROM
-    sys.master_files AS f
-CROSS APPLY
-    sys.dm_os_volume_stats(f.database_id, f.file_id)
-ORDER BY
-    mount_point;
-PRINT N'⚠️ Fix: Ensure sufficient free space on drives hosting DB files. Archive old data or expand volumes if needed.';
-
--- 6. Database Status
+-- Database Status
+PRINT '   '
 PRINT '[--- Database Status ---]';
 IF EXISTS (
     SELECT 1 FROM sys.databases WHERE state_desc <> 'ONLINE'
 )
 BEGIN
+    PRINT '   '
     PRINT N'⚠️ Issue: One or more databases are not ONLINE.';
-    PRINT '--> Fix: Check for recovery issues, corruption, or intentional offline status.';
+    PRINT 'Check for recovery issues, corruption, or intentional offline status.';
 
     SELECT 
 	SUBSTRING(name,1,40) AS OfflineDatabase, 
@@ -175,120 +324,205 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT '--> All databases are ONLINE.';
+    PRINT '   '
+    PRINT N'✅All databases are ONLINE.';
 END
 
--- 7. Top Waits
-PRINT '[--- Top Waits ---]';
-SELECT TOP 5 
-    wait_type, 
-    wait_time_ms / 1000.0 AS wait_sec,
-    waiting_tasks_count,
-    signal_wait_time_ms / 1000.0 AS signal_wait_sec
-FROM sys.dm_os_wait_stats
-WHERE wait_type NOT IN (
-    'SLEEP_TASK', 'BROKER_TASK_STOP', 'SQLTRACE_BUFFER_FLUSH', 'CLR_SEMAPHORE',
-    'LAZYWRITER_SLEEP', 'RESOURCE_QUEUE', 'XE_TIMER_EVENT', 'XE_DISPATCHER_WAIT'
+-- Wait issues
+SET NOCOUNT ON
+PRINT '   '
+PRINT '[--- Investigate Waits ---]';
+
+;WITH WaitInfo AS
+(
+    SELECT *
+    FROM
+    (
+        VALUES
+        -- wait_type, description, category, impact
+        ('PAGEIOLATCH_EX', 'Disk I/O bottleneck on data pages; check storage latency, missing indexes, or excessive writes.', 'I/O', 'Slows down reads/writes; can cause query latency.'),
+        ('PAGEIOLATCH_SH', 'Disk I/O bottleneck on shared data pages; investigate read-heavy workloads and storage performance.', 'I/O', 'Slows down read operations; affects OLTP and reporting queries.'),
+        ('IO_COMPLETION', 'I/O completion waits; investigate disk subsystem latency or overloaded storage.', 'I/O', 'General I/O delay; can impact all workloads.'),
+        ('LOGMGR_RESERVE_APPEND', 'Log manager waits; can indicate log file growth or disk latency. Check VLF fragmentation and log disk performance.', 'I/O', 'Slows down transaction commits; impacts write-heavy workloads.'),
+        ('WRITELOG', 'Log flush waits; check disk latency or excessive logging.', 'I/O', 'Delays transaction commits; can cause blocking.'),
+        ('ASYNC_NETWORK_IO', 'Client/network slow to consume results; investigate network throughput or client-side processing.', 'Network', 'Query completes but waits for client; can cause session blocking.'),
+        ('CXPACKET', 'Parallelism waits; often due to skewed plans or MAXDOP settings.', 'CPU', 'Uneven parallelism; can waste CPU and slow queries.'),
+        ('SOS_SCHEDULER_YIELD', 'CPU pressure; tasks yielding scheduler. Investigate CPU utilization and query efficiency.', 'CPU', 'Indicates CPU bottleneck; slows query execution.'),
+        ('RESOURCE_SEMAPHORE', 'Query memory grant waits; memory pressure or large queries.', 'Memory', 'Delays query start; can cause concurrency issues.'),
+        ('LCK_M_S', 'Shared lock waits; indicates blocking. Investigate queries holding locks too long or isolation level issues.', 'Locking', 'Blocks readers; can cause query timeouts.'),
+        ('LCK_M_X', 'Exclusive lock waits; indicates blocking or contention.', 'Locking', 'Blocks writers; can cause severe blocking.'),
+        ('MEMORY_ALLOCATION_EXT', 'Memory allocation waits; investigate memory pressure or large allocations.', 'Memory', 'Can slow query execution or cause spills.')
+    ) AS W(wait_type, Description, Category, Impact)
+),
+ExcludedWaits AS
+(
+    SELECT wait_type FROM
+    (
+        VALUES
+        ('SLEEP_TASK'), ('BROKER_TASK_STOP'), ('SQLTRACE_BUFFER_FLUSH'), ('CLR_SEMAPHORE'),
+        ('LAZYWRITER_SLEEP'), ('RESOURCE_QUEUE'), ('XE_TIMER_EVENT'), ('XE_DISPATCHER_WAIT'),
+        ('SOS_WORK_DISPATCHER'), ('HADR_WORK_QUEUE'), ('BROKER_TRANSMITTER'),
+        ('SP_SERVER_DIAGNOSTICS_SLEEP'), ('HADR_NOTIFICATION_DEQUEUE'), ('DIRTY_PAGE_POLL'),
+        ('FT_IFTS_SCHEDULER_IDLE_WAIT'), ('LOGMGR_QUEUE'), ('CHECKPOINT_QUEUE'),
+        ('REQUEST_FOR_DEADLOCK_SEARCH'), ('BROKER_EVENTHANDLER'), ('BROKER_RECEIVE_WAITFOR'),
+        ('DISPATCHER_QUEUE_SEMAPHORE'), ('FT_IFTSHC_MUTEX'), ('SQLTRACE_INCREMENTAL_FLUSH_SLEEP'),
+        ('WAITFOR'), ('DBMIRROR_EVENTS_QUEUE'), ('DBMIRROR_WORKER_QUEUE'), ('DBMIRRORING_CMD'),
+        ('HADR_CLUSAPI_CALL'), ('HADR_FILESTREAM_IOMGR_IOCOMPLETION'), ('QDS_PERSIST_TASK_MAIN_LOOP_SLEEP'),
+        ('HADR_TIMER_TASK'), ('CLR_AUTO_EVENT'), ('BROKER_TO_FLUSH'), ('ONDEMAND_TASK_QUEUE'),
+        ('PARALLEL_REDO_WORKER_WAIT_WORK'), ('HADR_LOGCAPTURE_WAIT'), ('REDO_THREAD_PENDING_WORK'),
+        ('CXCONSUMER')
+    ) AS E(wait_type)
 )
-ORDER BY wait_time_ms DESC;
-PRINT '--> Review top waits above. Investigate high waits like PAGEIOLATCH (disk I/O), CXPACKET (parallelism), or SOS_SCHEDULER_YIELD (CPU pressure).';
+SELECT TOP 15
+   SUBSTRING(ws.wait_type,1,40) AS Wait_Type,
+    STR(ws.wait_time_ms / 1000.0, 8, 2) AS wait_sec,
+    STR(ws.signal_wait_time_ms / 1000.0, 8, 2) AS signal_wait_sec,
+    ISNULL(wi.Category, 'Other') AS Category,
+    ISNULL(wi.Description, 'Investigate: No specific description available.') AS Description,
+    ISNULL(wi.Impact, 'Impact unknown; review workload.') AS Impact
+FROM sys.dm_os_wait_stats AS ws
+LEFT JOIN WaitInfo AS wi ON ws.wait_type = wi.wait_type
+WHERE ws.wait_type NOT IN (SELECT wait_type FROM ExcludedWaits)
+ORDER BY ws.wait_time_ms DESC;
+PRINT '   '
+PRINT N'⚠️ Only waits that may indicate performance issues are shown above. Review Category and Impact for troubleshooting guidance.';
 
--- 8. TempDB Usage
-PRINT '[--- TempDB Usage ---]';
-DECLARE @UserObjectsKB INT, @VersionStoreKB INT;
-
-SELECT
- 
-    @UserObjectsKB = ISNULL(SUM(user_object_reserved_page_count), 0) * 8,
-    @VersionStoreKB = ISNULL(SUM(version_store_reserved_page_count), 0) * 8
-
-FROM sys.dm_db_file_space_usage;
-
-IF @UserObjectsKB > 500000 OR @VersionStoreKB > 500000
-BEGIN
-    PRINT N'⚠️ Warning: TempDB usage is high.';
-    PRINT '--> Fix: Investigate session usage, versioning, or workload. Consider multiple files and trace flags -T1117 -T1118.';
-END
-ELSE
-BEGIN
-    PRINT '--> TempDB usage is within normal range.';
-END
-
-SELECT 
-    ISNULL(SUM(user_object_reserved_page_count), 0) * 8 AS UserObjectsKB,
-    ISNULL(SUM(internal_object_reserved_page_count), 0) * 8 AS InternalObjectsKB,
-    ISNULL(SUM(version_store_reserved_page_count), 0) * 8 AS VersionStoreKB,
-    ISNULL(SUM(unallocated_extent_page_count), 0) * 8 AS FreeSpaceKB
-FROM sys.dm_db_file_space_usage;
-
--- 9. CPU & Memory Pressure
-PRINT '[--- CPU & Memory Pressure ---]';
-SELECT 
-    total_physical_memory_kb / 1024 AS TotalMemoryMB,
-    available_physical_memory_kb / 1024 AS AvailableMemoryMB,
-    SUBSTRING(system_memory_state_desc,1,40)AS System_Memory_Desc
-FROM sys.dm_os_sys_memory;
-
--- 10. Page Life Expectancy
-PRINT '[--- Page Life Expectancy ---]';
-DECLARE @PLE INT;
-
-SELECT @PLE = cntr_value
-FROM sys.dm_os_performance_counters
-WHERE object_name LIKE '%Buffer Manager%'
-  AND counter_name = 'Page life expectancy';
-
-PRINT 'Current Page Life Expectancy: ' + CAST(@PLE AS VARCHAR);
-
-IF @PLE < 500
-BEGIN
-    PRINT N'⚠️ Warning: Page Life Expectancy is below 500.';
-    PRINT '--> Fix: Investigate memory pressure, buffer pool churn, or large query workloads. Consider reviewing memory settings and query patterns.';
-END
-ELSE
-BEGIN
-    PRINT '--> Page Life Expectancy is within acceptable range.';
-END
 ---------------------------------------------------------------
 
--- 11 Top CPU Consumers
-PRINT '[---Top 5 CPU Consumers---]'
-SELECT TOP 5 
-    total_worker_time / 1000 AS CPU_ms,
-    execution_count,
-    text
-FROM sys.dm_exec_query_stats qs
-CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle)
-ORDER BY total_worker_time DESC;
-PRINT '--> Review memory state and top CPU consumers. Tune expensive queries or add indexes if needed.';
+-- Top 10 CPU Consumers (Text-view aligned, with totals)
+SET NOCOUNT ON;
+PRINT '   '
+PRINT '[---Top 10 CPU Consumers---]';
 
--- 12. Long-running Queries
-PRINT '[--- Long-running Queries (>5 min) ---]';
+-- Fixed widths:
+-- RowNo(5) | CPU_ms(12) | CPU_HHMMSS(12) | ExecCnt(9) | AvgCPU_ms(12) | %Inst(7) | QueryText(80)
+DECLARE @Header NVARCHAR(400) =
+    'RowNo CPU_ms      CPU_HHMMSS   ExecCnt   AvgCPU_ms   %Inst  QueryText';
+DECLARE @Separator NVARCHAR(400) =
+      REPLICATE('-',5)  + ' '
+    + REPLICATE('-',12) + ' '
+    + REPLICATE('-',12) + ' '
+    + REPLICATE('-',9)  + ' '
+    + REPLICATE('-',12) + ' '
+    + REPLICATE('-',7)  + ' '
+    + REPLICATE('-',80);
 
-IF EXISTS (
-    SELECT 1
-    FROM sys.dm_exec_requests r
-    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
-    WHERE r.total_elapsed_time > 300000
-      AND t.text NOT LIKE '%sp_server_diagnostics%'
-)
-BEGIN
-    PRINT '⚠️ Long-running request detected (excluding sp_server_diagnostics).';
+PRINT @Header;
+PRINT @Separator;
 
+;WITH Base AS (
+    SELECT
+        qs.total_worker_time            AS total_worker_us,         -- microseconds
+        qs.execution_count              AS ExecCnt,
+        t.[text]                        AS QueryText
+    FROM sys.dm_exec_query_stats AS qs
+    CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS t
+),
+Totals AS (
     SELECT 
-        N'⚠️' AS LongRunningQuery,
-        r.session_id,
-        r.total_elapsed_time / 1000 AS ElapsedSec,
-        SUBSTRING(t.text, 1, 100) AS sql_text
-    FROM sys.dm_exec_requests r
-    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
-    WHERE r.total_elapsed_time > 300000
-      AND t.text NOT LIKE '%sp_server_diagnostics%';
-END
-ELSE
-BEGIN
-    PRINT '--> No long-running queries over 5 minutes.';
-END
+        SUM(CAST(total_worker_us AS BIGINT)) / 1000 AS InstTotalCPU_ms  -- instance total in ms
+    FROM Base
+),
+TopCpu AS (
+    SELECT TOP 10
+        ROW_NUMBER() OVER (ORDER BY b.total_worker_us DESC)         AS RowNo,
+        CAST(b.total_worker_us / 1000 AS BIGINT)                    AS CPU_ms,
+        b.ExecCnt,
+        CASE WHEN b.ExecCnt > 0 
+             THEN CAST((b.total_worker_us / 1000.0) / b.ExecCnt AS DECIMAL(20,2))
+             ELSE CAST(0.0 AS DECIMAL(20,2))
+        END                                                         AS AvgCPU_ms,
+        b.QueryText
+    FROM Base b
+    ORDER BY b.total_worker_us DESC
+),
+WithPct AS (
+    SELECT
+        tc.*,
+        CAST(
+            CASE WHEN t.InstTotalCPU_ms > 0 
+                 THEN (tc.CPU_ms * 100.0) / t.InstTotalCPU_ms 
+                 ELSE 0.0 
+            END AS DECIMAL(6,2)
+        ) AS PctOfInstance
+    FROM TopCpu tc
+    CROSS JOIN Totals t
+),
+-- Helper to render HH:MM:SS from milliseconds (no DATEADD to avoid overflow)
+Render AS (
+    SELECT
+        RowNo,
+        CPU_ms,
+        ExecCnt,
+        AvgCPU_ms,
+        PctOfInstance,
+        QueryText,
+        -- Convert ms -> seconds
+        CAST(CPU_ms / 1000 AS BIGINT) AS TotalSeconds
+    FROM WithPct
+)
+SELECT
+    CONCAT(
+        RIGHT(SPACE(5)  + CAST(RowNo AS VARCHAR(5)), 5), ' ',
+        RIGHT(SPACE(12) + CAST(CPU_ms AS VARCHAR(12)), 12), ' ',
+        -- HH:MM:SS (hours may exceed 99 on very busy systems; we cap width, not value)
+        RIGHT(
+            SPACE(12) + 
+            CONCAT(
+                -- Hours can exceed 24; show total hours
+                CAST((TotalSeconds / 3600) AS VARCHAR(12)), ':',
+                RIGHT('0' + CAST(((TotalSeconds % 3600) / 60) AS VARCHAR(2)), 2), ':',
+                RIGHT('0' + CAST((TotalSeconds % 60) AS VARCHAR(2)), 2)
+            )
+        , 12), ' ',
+        RIGHT(SPACE(9)  + CAST(ExecCnt AS VARCHAR(9)), 9), ' ',
+        RIGHT(SPACE(12) + CAST(AvgCPU_ms AS VARCHAR(12)), 12), ' ',
+        RIGHT(SPACE(7)  + CAST(PctOfInstance AS VARCHAR(7)), 7), ' ',
+        LEFT(
+            REPLACE(REPLACE(QueryText, CHAR(13)+CHAR(10), ' '), CHAR(9), ' ')
+        , 80)
+    ) AS [RowNo CPU_ms CPU_HHMMSS ExecCnt AvgCPU_ms %Inst QueryText]
+FROM Render
+ORDER BY RowNo;
 
-PRINT '================================================================================================================'
+-- Footer: totals for Top 10 and percent of instance
+;WITH Base AS (
+    SELECT
+        qs.total_worker_time AS total_worker_us
+    FROM sys.dm_exec_query_stats AS qs
+),
+Totals AS (
+    SELECT SUM(CAST(total_worker_us AS BIGINT)) / 1000 AS InstTotalCPU_ms
+    FROM Base
+),
+Top10 AS (
+    SELECT TOP 10
+        CAST(qs.total_worker_time / 1000 AS BIGINT) AS CPU_ms
+    FROM sys.dm_exec_query_stats qs
+    ORDER BY qs.total_worker_time DESC
+),
+Agg AS (
+    SELECT 
+        (SELECT SUM(CPU_ms) FROM Top10) AS Top10CPU_ms,
+        t.InstTotalCPU_ms
+    FROM Totals t
+)
+SELECT
+    -- Print a clean footer line with totals
+    CONCAT(
+        'Top10 Total CPU (ms): ',
+        CAST(Top10CPU_ms AS VARCHAR(30)),
+        ' | Top10 Total CPU (HH:MM:SS): ',
+        CONCAT(
+            CAST((Top10CPU_ms/1000)/3600 AS VARCHAR(20)), ':',
+            RIGHT('0' + CAST((((Top10CPU_ms/1000)%3600)/60) AS VARCHAR(2)), 2), ':',
+            RIGHT('0' + CAST(((Top10CPU_ms/1000)%60) AS VARCHAR(2)), 2)
+        ),
+        ' | % of Instance CPU: ',
+        CAST(CASE WHEN InstTotalCPU_ms>0 THEN (Top10CPU_ms*100.0)/InstTotalCPU_ms ELSE 0.0 END AS DECIMAL(6,2)),
+        '%'
+    ) AS [Summary]
+FROM Agg;
+
 PRINT '[=== End of Emergency Diagnostic ===]';
+
