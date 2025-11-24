@@ -1,11 +1,10 @@
 
-
 ---------------------------------------
 --Emergency fault find SQL instance
 --Run in Text format for easier reading
 --Adrian Sleigh
---V4.0 Last updated 21/11/25
---Added transaction log usage summary
+--V5.0 Last updated 24/11/25
+--Added QueryStore report
 ---------------------------------------
 SET NOCOUNT ON;
 PRINT N'=== 📊 SQL Server Emergency Diagnostic Script ===';
@@ -24,6 +23,8 @@ FROM sys.dm_os_sys_info;
 ------------------------------------------------
 --2. DMV-based simplified sp_who2 with ProgramName, Blocking Info, excluding system and SA
 PRINT '[--- Current Connections ---]';
+PRINT '-----------------------------'
+
 SELECT 
     s.session_id AS [SPID],
     s.status,
@@ -60,6 +61,8 @@ WHERE object_name LIKE '%Buffer Manager%'
   AND counter_name = 'Page life expectancy';
 
 PRINT '[--- Page Life Expectancy ---]';
+PRINT '-----------------------------'
+
 SELECT
     @PLE AS PageLifeExpectancy,
     cntr_value AS PageLifeValue,
@@ -85,6 +88,8 @@ END
 --4. CPU Pressure
 PRINT '   '
 PRINT '[--- CPU Pressure ---]';
+PRINT '----------------------'
+
 SELECT 
     total_physical_memory_kb / 1024 AS TotalMemoryMB,
     available_physical_memory_kb / 1024 AS AvailableMemoryMB,
@@ -94,6 +99,8 @@ FROM sys.dm_os_sys_memory;
 
 --5. Blocking Sessions
 PRINT '[--- Blocking Sessions ---]';
+PRINT '--------------------------'
+
 IF EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
 BEGIN 
     PRINT '   '
@@ -144,6 +151,7 @@ JOIN DbStates AS ds ON ds.name = ls.DatabaseName
 WHERE ds.state <> 0;  -- keep only ONLINE databases
 PRINT '   '
 PRINT '[---Transaction Log Usage Summary---]';
+PRINT '------------------------------------'
 
 -- Fixed-width header
 DECLARE @Header1 NVARCHAR(200) = 'DbName                 LogSizeMB   Used%   Status';
@@ -190,6 +198,7 @@ END
 --7. Long-running Queries
 PRINT '   '
 PRINT '[--- Long-running Queries (>5 min) ---]';
+PRINT '--------------------------------------'
 
 IF EXISTS (
     SELECT 1
@@ -221,6 +230,7 @@ END
 --8.  Availability Group Health
 PRINT '   '
 PRINT '[--- Availability Group Health ---]';
+PRINT '-----------------------------------'
 
 IF EXISTS (
     SELECT 1 FROM sys.dm_hadr_availability_replica_states WHERE role_desc = 'PRIMARY'
@@ -267,6 +277,7 @@ END
 SET NOCOUNT ON
 PRINT '   ';
 PRINT '[--- Disk Space ---]';
+PRINT '-------------------'
 
 -- Always start fresh
 IF OBJECT_ID('tempdb..#DiskInfo') IS NOT NULL DROP TABLE #DiskInfo;
@@ -328,6 +339,9 @@ IF @CriticalCount = 0 AND @WarningCount = 0
 Drop table #DiskInfo
 ---------------------------------------------------------------------------------------------------
 ---10. Failed Jobs
+PRINT '[--- Failed Jobs ---]';
+PRINT '-------------------'
+
 DECLARE @Since DATETIME = DATEADD(DAY, -1, GETDATE());
 
 IF EXISTS (
@@ -346,7 +360,7 @@ IF EXISTS (
 BEGIN
     PRINT '   '
     PRINT N'⚠️ Issue: One or more jobs failed in the last 24 hours.';
-
+	
     SELECT
         LEFT(j.name, 40) AS FailedJobName,
         h.step_id,
@@ -376,8 +390,47 @@ BEGIN
     PRINT N'✅All SQL Agent jobs succeeded in the last 24 hours.';
 END
 ------------------------------------------------------------------------
---11. Error Log Summary
+ --11. Busiest Databases
+  PRINT '[--- Busiest Databases ---]'
+  PRINT '--------------------------'
+
+  GO
+WITH db_stats AS (
+    SELECT 
+        DB_NAME(CAST(pa.value AS INT)) AS database_name,
+        SUM(qs.execution_count) AS total_executions,
+        SUM(qs.total_elapsed_time) AS total_elapsed_time,
+        SUM(qs.total_worker_time) AS total_worker_time,
+        SUM(qs.total_logical_reads) AS total_logical_reads,
+        SUM(qs.total_logical_writes) AS total_logical_writes
+    FROM 
+        sys.dm_exec_query_stats AS qs
+    CROSS APPLY 
+        sys.dm_exec_plan_attributes(qs.plan_handle) AS pa
+    WHERE 
+        pa.attribute = 'dbid'
+        AND DB_NAME(CAST(pa.value AS INT)) NOT IN ('master', 'msdb', 'model', 'tempdb')
+    GROUP BY 
+        pa.value
+)
+SELECT 
+    SUBSTRING(database_name,1,40) AS DatabaseName,
+       CAST(100.0 * total_elapsed_time / SUM(total_elapsed_time) OVER () AS DECIMAL(5,2)) AS PercentBusy,
+    total_executions,
+    total_elapsed_time,
+    total_worker_time,
+    total_logical_reads,
+    total_logical_writes
+
+FROM 
+    db_stats
+ORDER BY 
+    PercentBusy DESC;
+
+-------------------------------------------------------------------------
+--12. Error Log Summary
 PRINT '[--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
+PRINT '-----------------------------------------------------------------------------'
 
 -- Create temp table
 CREATE TABLE #ErrorLog (
@@ -406,9 +459,11 @@ PRINT '   '
 PRINT N'⚠️ Review above for repeated or critical errors. Investigate login failures, AG issues, or I/O errors.';
 -------------------------------------------------------
 
---12. Database Status
+--13. Database Status
 PRINT '   '
 PRINT '[--- Database Status ---]';
+PRINT '-------------------------'
+
 IF EXISTS (
     SELECT 1 FROM sys.databases WHERE state_desc <> 'ONLINE'
 )
@@ -428,7 +483,7 @@ BEGIN
     PRINT N'✅All databases are ONLINE.';
 END
 
---13. Wait issues
+--14. Wait issues
 SET NOCOUNT ON
 PRINT '   '
 PRINT '[--- Investigate Waits ---]';
@@ -488,7 +543,7 @@ PRINT '   '
 PRINT N'⚠️ Only waits that may indicate performance issues are shown above. Review Category and Impact for troubleshooting guidance.';
 PRINT '   '
 ---------------------------------------------------------------
---14. Check tempdb current useage
+--15. Check tempdb current useage
 SET NOCOUNT ON;
 SET ANSI_WARNINGS OFF;  -- Suppress NULL aggregate warning
 
@@ -501,6 +556,8 @@ IF @PagesUsed > 0
 BEGIN
     PRINT '   '
     PRINT '[---TempDB User Object Usage---]';
+	PRINT '--------------------------------'
+
     SELECT 
         ISNULL(SUM(user_object_reserved_page_count), 0) AS [UserObjectPagesUsed],
         (ISNULL(SUM(user_object_reserved_page_count), 0) * 1.0 / 128) AS [UserObjectSpaceMB]
@@ -513,10 +570,11 @@ BEGIN
 END
 SET ANSI_WARNINGS ON;   -- Restore default behavior
 ----------------------------------------------------------------------
---15.Top 10 CPU Consumers (Text-view aligned, with totals)
+--16.Top 10 CPU Consumers (Text-view aligned, with totals)
 SET NOCOUNT ON;
 PRINT '   '
 PRINT '[---Top 10 CPU Consumers---]';
+PRINT '----------------------------'
 
 -- Fixed widths:
 -- RowNo(5) | CPU_ms(12) | CPU_HHMMSS(12) | ExecCnt(9) | AvgCPU_ms(12) | %Inst(7) | QueryText(200)
@@ -649,7 +707,10 @@ SELECT
 FROM Agg;
 
 ----------------------------------------------------------------
---16. Index and Stats
+--17. Index and Stats
+
+PRINT '[--- Index and Statistics ---]'
+PRINT '------------------------------'
 
 SET NOCOUNT ON;
 IF OBJECT_ID('tempdb..#IndexStats') IS NOT NULL DROP TABLE #IndexStats;
@@ -713,7 +774,6 @@ SELECT MAX(LastIndexStatsUpdate) AS InstanceLastIndexMaintenance
 FROM #IndexStats;
 
 ----------------------------------------------------------------
-
 -- Per-database summary
 SELECT 
     SUBSTRING(DbName,1,40) AS DatabaseName,
@@ -735,5 +795,247 @@ FROM #IndexStats
 WHERE LastIndexStatsUpdate IS NOT NULL
 ORDER BY LastIndexStatsUpdate ASC;
 DROP TABLE #IndexStats
+-------------------------------------------------
 
+--18. Query Store Results
+
+PRINT '[--- Query Store Status ---]';
+PRINT '----------------------------'
+SET NOCOUNT ON;
+
+DECLARE @LookbackDays INT = 7;       -- Lookback window in days
+DECLARE @TopN INT = 10;              -- Top N queries per metric per database
+DECLARE @MinExecutions BIGINT = 5;   -- Minimum executions to include
+
+/********************************************************************
+A) Query Store status across databases
+*********************************************************************/
+IF OBJECT_ID('tempdb..#DbStatus') IS NOT NULL DROP TABLE #DbStatus;
+CREATE TABLE #DbStatus (
+    DatabaseId INT,
+    DatabaseName SYSNAME,
+    CompatibilityLevel INT,
+    IsQueryStoreAvailable BIT,
+    ActualStateDesc NVARCHAR(60) NULL,
+    DesiredStateDesc NVARCHAR(60) NULL,
+    IsQueryStoreEnabled BIT,
+    IsReadOnly BIT
+);
+
+DECLARE @db SYSNAME, @dbid INT, @compat INT, @readonly BIT, @cmd NVARCHAR(MAX);
+
+DECLARE dbs CURSOR LOCAL FAST_FORWARD FOR
+SELECT name, database_id, compatibility_level, is_read_only
+FROM sys.databases
+WHERE database_id > 4      -- exclude master, tempdb, model, msdb
+  AND state = 0;           -- ONLINE
+
+OPEN dbs;
+FETCH NEXT FROM dbs INTO @db, @dbid, @compat, @readonly;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @cmd = N'
+BEGIN TRY
+    USE ' + QUOTENAME(@db) + N';
+    INSERT INTO #DbStatus (DatabaseId, DatabaseName, CompatibilityLevel, IsQueryStoreAvailable, ActualStateDesc, DesiredStateDesc, IsQueryStoreEnabled, IsReadOnly)
+    SELECT
+        ' + CAST(@dbid AS NVARCHAR(10)) + N',
+        ' + QUOTENAME(@db,'''') + N',
+        ' + CAST(@compat AS NVARCHAR(10)) + N',
+        1,
+        qso.actual_state_desc,
+        qso.desired_state_desc,
+        CASE WHEN qso.actual_state_desc IN (''READ_WRITE'',''READ_ONLY'') THEN 1 ELSE 0 END,
+        ' + CAST(@readonly AS NVARCHAR(1)) + N'
+    FROM sys.database_query_store_options AS qso;
+END TRY
+BEGIN CATCH
+    INSERT INTO #DbStatus (DatabaseId, DatabaseName, CompatibilityLevel, IsQueryStoreAvailable, ActualStateDesc, DesiredStateDesc, IsQueryStoreEnabled, IsReadOnly)
+    SELECT
+        ' + CAST(@dbid AS NVARCHAR(10)) + N',
+        ' + QUOTENAME(@db,'''') + N',
+        ' + CAST(@compat AS NVARCHAR(10)) + N',
+        0, NULL, NULL, 0, ' + CAST(@readonly AS NVARCHAR(1)) + N';
+END CATCH;
+';
+    EXEC sys.sp_executesql @cmd;
+    FETCH NEXT FROM dbs INTO @db, @dbid, @compat, @readonly;
+END
+
+CLOSE dbs;
+DEALLOCATE dbs;
+
+
+SELECT
+    SUBSTRING(DatabaseName,1,40) AS DatabaseName,
+    CompatibilityLevel,
+    IsQueryStoreAvailable,
+    SUBSTRING(ActualStateDesc,1,20) AS ActualStateDesc,
+    SUBSTRING (DesiredStateDesc,1,20) AS DesiredStaeDesc,
+    IsQueryStoreEnabled,
+    IsReadOnly,
+    StatusHighlight = CASE
+        WHEN IsQueryStoreAvailable = 0 THEN N'⚠️Query Store not supported or inaccessible'
+        WHEN IsQueryStoreEnabled = 0 THEN N'⚠️Query Store NOT enabled'
+        WHEN ActualStateDesc = 'READ_ONLY' THEN 'Query Store read-only (capture stopped)'
+        ELSE N'✅Query Store enabled'
+    END
+FROM #DbStatus
+ORDER BY IsQueryStoreEnabled DESC, DatabaseName;
+
+
+/********************************************************************
+B) Worst queries from Query Store (last @LookbackDays days)
+   - No reliance on sys.plan_attributes
+*********************************************************************/
+IF OBJECT_ID('tempdb..#WorstQueriesRaw') IS NOT NULL DROP TABLE #WorstQueriesRaw;
+CREATE TABLE #WorstQueriesRaw (
+    DatabaseName SYSNAME,
+    QueryId BIGINT,
+    PlanId BIGINT,
+    QueryText NVARCHAR(MAX),
+    ObjectName SYSNAME NULL,
+    AvgDurationMs DECIMAL(18,2),
+    AvgCPUms DECIMAL(18,2),
+    AvgLogicalReads DECIMAL(18,2),
+    ExecutionCount BIGINT,
+    LastExecutionTime DATETIME2(3),
+    MetricCategory VARCHAR(20)
+);
+
+DECLARE @StartTime DATETIME2(0) = DATEADD(DAY, -@LookbackDays, SYSUTCDATETIME());
+
+DECLARE enabled CURSOR LOCAL FAST_FORWARD FOR
+SELECT DatabaseName
+FROM #DbStatus
+WHERE IsQueryStoreAvailable = 1
+  AND IsQueryStoreEnabled = 1;
+
+OPEN enabled;
+FETCH NEXT FROM enabled INTO @db;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @cmd = N'
+BEGIN TRY
+    USE ' + QUOTENAME(@db) + N';
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM sys.database_query_store_options
+        WHERE actual_state_desc IN (''READ_WRITE'', ''READ_ONLY'')
+    )
+        RETURN;
+
+    ;WITH qs AS (
+        SELECT
+            q.query_id,
+            p.plan_id,
+            qt.query_sql_text,
+            rs.count_executions AS exec_count,
+            rs.avg_duration * 1000.0 AS avg_duration_ms,
+            rs.avg_cpu_time * 1000.0 AS avg_cpu_ms,
+            rs.avg_logical_io_reads AS avg_logical_reads,
+            rs.last_execution_time
+        FROM sys.query_store_query AS q
+        JOIN sys.query_store_plan AS p ON p.query_id = q.query_id
+        JOIN sys.query_store_query_text AS qt ON qt.query_text_id = q.query_text_id
+        JOIN sys.query_store_runtime_stats AS rs ON rs.plan_id = p.plan_id
+        JOIN sys.query_store_runtime_stats_interval AS rsi ON rsi.runtime_stats_interval_id = rs.runtime_stats_interval_id
+        WHERE rsi.end_time >= @StartTime
+          AND rs.count_executions >= @MinExecutions
+    ),
+    top_duration AS (
+        SELECT TOP (@TopN) *
+        FROM qs
+        ORDER BY avg_duration_ms DESC
+    ),
+    top_cpu AS (
+        SELECT TOP (@TopN) *
+        FROM qs
+        ORDER BY avg_cpu_ms DESC
+    ),
+    top_reads AS (
+        SELECT TOP (@TopN) *
+        FROM qs
+        ORDER BY avg_logical_reads DESC
+    )
+    INSERT INTO #WorstQueriesRaw (DatabaseName, QueryId, PlanId, QueryText, ObjectName, AvgDurationMs, AvgCPUms, AvgLogicalReads, ExecutionCount, LastExecutionTime, MetricCategory)
+    SELECT DB_NAME(), query_id, plan_id, query_sql_text, NULL, avg_duration_ms, avg_cpu_ms, avg_logical_reads, exec_count, last_execution_time, ''Duration'' FROM top_duration
+    UNION ALL
+    SELECT DB_NAME(), query_id, plan_id, query_sql_text, NULL, avg_duration_ms, avg_cpu_ms, avg_logical_reads, exec_count, last_execution_time, ''CPU'' FROM top_cpu
+    UNION ALL
+    SELECT DB_NAME(), query_id, plan_id, query_sql_text, NULL, avg_duration_ms, avg_cpu_ms, avg_logical_reads, exec_count, last_execution_time, ''Reads'' FROM top_reads;
+END TRY
+BEGIN CATCH
+    RETURN;
+END CATCH;
+';
+    EXEC sp_executesql
+        @cmd,
+        N'@StartTime DATETIME2(0), @TopN INT, @MinExecutions BIGINT',
+        @StartTime=@StartTime, @TopN=@TopN, @MinExecutions=@MinExecutions;
+
+    FETCH NEXT FROM enabled INTO @db;
+END
+
+CLOSE enabled;
+DEALLOCATE enabled;
+
+-- Deduplicate and store in #WorstQueries (no ORDER BY in SELECT INTO)
+IF OBJECT_ID('tempdb..#WorstQueries') IS NOT NULL DROP TABLE #WorstQueries;
+
+SELECT
+    DatabaseName,
+    QueryId,
+    PlanId,
+    QueryText,
+    ObjectName,
+    AvgDurationMs,
+    AvgCPUms,
+    AvgLogicalReads,
+    ExecutionCount,
+    LastExecutionTime,
+    MetricCategory
+INTO #WorstQueries
+FROM (
+    SELECT *,
+           ROW_NUMBER() OVER (
+                PARTITION BY DatabaseName, QueryId, PlanId
+                ORDER BY 
+                    CASE MetricCategory
+                        WHEN 'Duration' THEN AvgDurationMs
+                        WHEN 'CPU'     THEN AvgCPUms
+                        WHEN 'Reads'   THEN AvgLogicalReads
+                    END DESC
+           ) AS rn
+    FROM #WorstQueriesRaw
+) AS x
+WHERE rn = 1;
+
+PRINT '==== Worst Queries from Query Store ====';
+SELECT
+    SUBSTRING(DatabaseName,1,40)AS DatabasName,
+    MetricCategory,
+    QueryId,
+    PlanId,
+    AvgDurationMs,
+    AvgCPUms,
+    AvgLogicalReads,
+    ExecutionCount,
+    LastExecutionTime,
+    QueryText = CASE 
+        WHEN LEN(QueryText) > 4000 THEN LEFT(QueryText, 4000) + N' …(truncated)'
+        ELSE QueryText
+    END
+FROM #WorstQueries
+ORDER BY DatabaseName,
+         MetricCategory,
+         CASE MetricCategory
+            WHEN 'Duration' THEN AvgDurationMs
+            WHEN 'CPU'      THEN AvgCPUms
+            WHEN 'Reads'    THEN AvgLogicalReads
+         END DESC;
+---------------------------------------------
 PRINT '[=== End of Emergency Diagnostic ===]';
