@@ -1,8 +1,7 @@
-
 /* Emergency Fault Find SQL Instance
    Run in Text format for easier reading
-   V5.0 Last updated 24/11/25 -Adrian Sleigh
-   Added QueryStore report.
+   V6.0 Last updated 24/11/25 -Adrian Sleigh
+   Fixed formatting results
 
  Collects 18 different results to help identify current issues.
 [1] Instance Info [2] Current Connections [3] Page Life Expectancy [4] CPU Pressure [5] Blocking Sessions
@@ -130,11 +129,11 @@ BEGIN
     PRINT N'✅No blocking sessions detected.';
 END
 ------------------------------------------------------------------------
---6. Transaction Log Usage
 
-PRINT '   '
+-- 6. Transaction Log Usage
+PRINT '   ';
 PRINT '[6.---Transaction Log Usage Summary---]';
-PRINT '--------------------------------------'
+PRINT '--------------------------------------';
 
 SET NOCOUNT ON;
 DECLARE @Threshold INT = 80;  -- change this to your preferred warning threshold (percent)
@@ -161,20 +160,11 @@ FROM #LogSpace AS ls
 JOIN DbStates AS ds ON ds.name = ls.DatabaseName
 WHERE ds.state <> 0;  -- keep only ONLINE databases
 
--- Fixed-width header
-DECLARE @Header1 NVARCHAR(200) = 'DbName                 LogSizeMB   Used%   Status';
-DECLARE @Sep    NVARCHAR(200) = REPLICATE('-',22) + ' ' + REPLICATE('-',9) + ' ' + REPLICATE('-',6) + ' ' + REPLICATE('-',6);
-PRINT @Header1;
-PRINT @Sep;
-
--- Summary rows
-SELECT
-    CONCAT(
-        LEFT(DatabaseName + SPACE(22), 22), ' ',
-        RIGHT(SPACE(9) + CAST(LogSizeMB AS VARCHAR(9)), 9), ' ',
-        RIGHT(SPACE(6) + CAST(LogUsedPct AS VARCHAR(6)), 6), ' ',
-        RIGHT(SPACE(6) + CAST(Status AS VARCHAR(6)), 6)
-    ) AS [Log Usage]
+SELECT 
+    SUBSTRING(DatabaseName,1,40) AS [Database],
+    LogSizeMB    AS [Log Size (MB)],
+    LogUsedPct   AS [Used %],
+    CASE Status WHEN 0 THEN 'ONLINE' ELSE CAST(Status AS VARCHAR(10)) END AS [Status]
 FROM #LogSpace
 ORDER BY LogUsedPct DESC, DatabaseName;
 
@@ -200,8 +190,9 @@ BEGIN
 END
 ELSE
 BEGIN
-    PRINT N'✅All databases are below the transaction log usage threshold.';
+    PRINT N'✅ All databases are below the transaction log usage threshold.';
 END
+
 -------------------------------------------------------------
 --7. Long-running Queries
 PRINT '   '
