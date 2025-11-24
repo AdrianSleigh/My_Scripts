@@ -238,7 +238,7 @@ END
 --8.  Availability Group Health
 PRINT '   '
 PRINT '[8.--- Availability Group Health ---]';
-PRINT '----------------------------------'
+PRINT  '-----------------------------------'
 
 IF EXISTS (
     SELECT 1 FROM sys.dm_hadr_availability_replica_states WHERE role_desc = 'PRIMARY'
@@ -494,6 +494,9 @@ END
 --14. Wait issues
 SET NOCOUNT ON
 PRINT '   '
+--14. Wait issues
+SET NOCOUNT ON
+PRINT '   '
 PRINT '[14.--- Investigate Waits ---]';
 PRINT '-----------------------------'
 
@@ -534,7 +537,10 @@ ExcludedWaits AS
         ('HADR_CLUSAPI_CALL'), ('HADR_FILESTREAM_IOMGR_IOCOMPLETION'), ('QDS_PERSIST_TASK_MAIN_LOOP_SLEEP'),
         ('HADR_TIMER_TASK'), ('CLR_AUTO_EVENT'), ('BROKER_TO_FLUSH'), ('ONDEMAND_TASK_QUEUE'),
         ('PARALLEL_REDO_WORKER_WAIT_WORK'), ('HADR_LOGCAPTURE_WAIT'), ('REDO_THREAD_PENDING_WORK'),
-        ('CXCONSUMER')
+        ('CXCONSUMER'),('PREEMPTIVE_OS_DEVICEOPS'),('PREEMPTIVE_OS_AUTHENTICATIONOPS'),('MSQL_XP'),
+		('PREEMPTIVE_OS_AUTHORIZATIONOPS'),('PREEMPTIVE_OS_REVERTTOSELF'),('PREEMPTIVE_OS_QUERYCONTEXTATTRIBUTES'),
+		('PREEMPTIVE_OS_REPORTEVENT'),('PREEMPTIVE_OS_LOOKUPACCOUNTSID'),('PREEMPTIVE_OS_DELETESECURITYCONTEXT'),('PREEMPTIVE_OS_QUERYREGISTRY'),
+		('PREEMPTIVE_OS_DISCONNECTNAMEDPIPE')
     ) AS E(wait_type)
 )
 SELECT TOP 15
