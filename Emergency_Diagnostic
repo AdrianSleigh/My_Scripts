@@ -1,14 +1,21 @@
 
----------------------------------------
---Emergency fault find SQL instance
---Run in Text format for easier reading
---Adrian Sleigh
---V5.0 Last updated 24/11/25
---Added QueryStore report
----------------------------------------
+/* Emergency Fault Find SQL Instance
+   Run in Text format for easier reading
+   V5.0 Last updated 24/11/25 -Adrian Sleigh
+   Added QueryStore report.
+
+ Collects 18 different results to help identify current issues.
+[1] Instance Info [2] Current Connections [3] Page Life Expectancy [4] CPU Pressure [5] Blocking Sessions
+[6] Transaction Log Usage Summary [7] Long-running Queries (>5 min) [8] Availability Group Health
+[9] Disk Space [10[ Failed Jobs [11] Busiest Databases [12] SQL Server Error Log (Last 100 entries excluding successful logons)
+[13] Database Status [14] Investigate Waits [15] TempDB User Object Usage [16] Top 10 CPU Consumers 
+[17] Index and Statistics [18] Query Store Status.
+
+*/
+---------------------------------------------------
 SET NOCOUNT ON;
 PRINT N'=== 📊 SQL Server Emergency Diagnostic Script ===';
-
+PRINT '[1--- Instance Info ---]'
 --1. Instance Info
 SELECT
     'INSTANCE NAME ' + 
@@ -22,8 +29,8 @@ SELECT
 FROM sys.dm_os_sys_info;
 ------------------------------------------------
 --2. DMV-based simplified sp_who2 with ProgramName, Blocking Info, excluding system and SA
-PRINT '[--- Current Connections ---]';
-PRINT '-----------------------------'
+PRINT '[2.--- Current Connections ---]';
+PRINT '-------------------------------------'
 
 SELECT 
     s.session_id AS [SPID],
@@ -60,8 +67,8 @@ FROM sys.dm_os_performance_counters
 WHERE object_name LIKE '%Buffer Manager%'
   AND counter_name = 'Page life expectancy';
 
-PRINT '[--- Page Life Expectancy ---]';
-PRINT '-----------------------------'
+PRINT '[3.--- Page Life Expectancy ---]';
+PRINT '-------------------------------------'
 
 SELECT
     @PLE AS PageLifeExpectancy,
@@ -87,8 +94,8 @@ END
 
 --4. CPU Pressure
 PRINT '   '
-PRINT '[--- CPU Pressure ---]';
-PRINT '----------------------'
+PRINT '[4.--- CPU Pressure ---]';
+PRINT '---------------------------'
 
 SELECT 
     total_physical_memory_kb / 1024 AS TotalMemoryMB,
@@ -98,8 +105,8 @@ FROM sys.dm_os_sys_memory;
 ------------------------------------------------------------------
 
 --5. Blocking Sessions
-PRINT '[--- Blocking Sessions ---]';
-PRINT '--------------------------'
+PRINT '[5.--- Blocking Sessions ---]';
+PRINT '--------------------------------'
 
 IF EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
 BEGIN 
@@ -124,8 +131,12 @@ BEGIN
 END
 ------------------------------------------------------------------------
 --6. Transaction Log Usage
-SET NOCOUNT ON;
 
+PRINT '   '
+PRINT '[6.---Transaction Log Usage Summary---]';
+PRINT '--------------------------------------'
+
+SET NOCOUNT ON;
 DECLARE @Threshold INT = 80;  -- change this to your preferred warning threshold (percent)
 
 IF OBJECT_ID('tempdb..#LogSpace') IS NOT NULL DROP TABLE #LogSpace;
@@ -149,9 +160,6 @@ DELETE ls
 FROM #LogSpace AS ls
 JOIN DbStates AS ds ON ds.name = ls.DatabaseName
 WHERE ds.state <> 0;  -- keep only ONLINE databases
-PRINT '   '
-PRINT '[---Transaction Log Usage Summary---]';
-PRINT '------------------------------------'
 
 -- Fixed-width header
 DECLARE @Header1 NVARCHAR(200) = 'DbName                 LogSizeMB   Used%   Status';
@@ -197,8 +205,8 @@ END
 -------------------------------------------------------------
 --7. Long-running Queries
 PRINT '   '
-PRINT '[--- Long-running Queries (>5 min) ---]';
-PRINT '--------------------------------------'
+PRINT '[7.--- Long-running Queries (>5 min) ---]';
+PRINT '----------------------------------------'
 
 IF EXISTS (
     SELECT 1
@@ -229,8 +237,8 @@ END
 --------------------------------------------------------------
 --8.  Availability Group Health
 PRINT '   '
-PRINT '[--- Availability Group Health ---]';
-PRINT '-----------------------------------'
+PRINT '[8.--- Availability Group Health ---]';
+PRINT '----------------------------------'
 
 IF EXISTS (
     SELECT 1 FROM sys.dm_hadr_availability_replica_states WHERE role_desc = 'PRIMARY'
@@ -276,8 +284,8 @@ END
 --9. DiskSpace
 SET NOCOUNT ON
 PRINT '   ';
-PRINT '[--- Disk Space ---]';
-PRINT '-------------------'
+PRINT '[9.--- Disk Space ---]';
+PRINT '-----------------------'
 
 -- Always start fresh
 IF OBJECT_ID('tempdb..#DiskInfo') IS NOT NULL DROP TABLE #DiskInfo;
@@ -339,8 +347,8 @@ IF @CriticalCount = 0 AND @WarningCount = 0
 Drop table #DiskInfo
 ---------------------------------------------------------------------------------------------------
 ---10. Failed Jobs
-PRINT '[--- Failed Jobs ---]';
-PRINT '-------------------'
+PRINT '[10.--- Failed Jobs ---]';
+PRINT '-----------------------'
 
 DECLARE @Since DATETIME = DATEADD(DAY, -1, GETDATE());
 
@@ -391,8 +399,8 @@ BEGIN
 END
 ------------------------------------------------------------------------
  --11. Busiest Databases
-  PRINT '[--- Busiest Databases ---]'
-  PRINT '--------------------------'
+  PRINT '[11.--- Busiest Databases ---]'
+  PRINT '-----------------------------'
 
   GO
 WITH db_stats AS (
@@ -429,8 +437,8 @@ ORDER BY
 
 -------------------------------------------------------------------------
 --12. Error Log Summary
-PRINT '[--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
-PRINT '-----------------------------------------------------------------------------'
+PRINT '[12.--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
+PRINT '-------------------------------------------------------------------------------'
 
 -- Create temp table
 CREATE TABLE #ErrorLog (
@@ -461,8 +469,8 @@ PRINT N'⚠️ Review above for repeated or critical errors. Investigate login f
 
 --13. Database Status
 PRINT '   '
-PRINT '[--- Database Status ---]';
-PRINT '-------------------------'
+PRINT '[13.--- Database Status ---]';
+PRINT '---------------------------'
 
 IF EXISTS (
     SELECT 1 FROM sys.databases WHERE state_desc <> 'ONLINE'
@@ -486,7 +494,8 @@ END
 --14. Wait issues
 SET NOCOUNT ON
 PRINT '   '
-PRINT '[--- Investigate Waits ---]';
+PRINT '[14.--- Investigate Waits ---]';
+PRINT '-----------------------------'
 
 ;WITH WaitInfo AS
 (
@@ -555,8 +564,8 @@ FROM sys.dm_db_file_space_usage;
 IF @PagesUsed > 0
 BEGIN
     PRINT '   '
-    PRINT '[---TempDB User Object Usage---]';
-	PRINT '--------------------------------'
+    PRINT '[15.---TempDB User Object Usage---]';
+	PRINT '---------------------------------------'
 
     SELECT 
         ISNULL(SUM(user_object_reserved_page_count), 0) AS [UserObjectPagesUsed],
@@ -565,7 +574,7 @@ BEGIN
 END
 ELSE
 BEGIN 
-  PRINT '[--- Tempdb Usage ---]   '
+  PRINT '[15--- Tempdb Usage ---]   '
   PRINT N'⚠️TEMPDB IS NOT CURRENTLY IN USE!'
 END
 SET ANSI_WARNINGS ON;   -- Restore default behavior
@@ -573,8 +582,8 @@ SET ANSI_WARNINGS ON;   -- Restore default behavior
 --16.Top 10 CPU Consumers (Text-view aligned, with totals)
 SET NOCOUNT ON;
 PRINT '   '
-PRINT '[---Top 10 CPU Consumers---]';
-PRINT '----------------------------'
+PRINT '[16.---Top 10 CPU Consumers---]';
+PRINT '-------------------------------'
 
 -- Fixed widths:
 -- RowNo(5) | CPU_ms(12) | CPU_HHMMSS(12) | ExecCnt(9) | AvgCPU_ms(12) | %Inst(7) | QueryText(200)
@@ -709,8 +718,8 @@ FROM Agg;
 ----------------------------------------------------------------
 --17. Index and Stats
 
-PRINT '[--- Index and Statistics ---]'
-PRINT '------------------------------'
+PRINT '[17.--- Index and Statistics ---]'
+PRINT '--------------------------------'
 
 SET NOCOUNT ON;
 IF OBJECT_ID('tempdb..#IndexStats') IS NOT NULL DROP TABLE #IndexStats;
@@ -799,8 +808,8 @@ DROP TABLE #IndexStats
 
 --18. Query Store Results
 
-PRINT '[--- Query Store Status ---]';
-PRINT '----------------------------'
+PRINT '[18.--- Query Store Status ---]';
+PRINT '-------------------------------'
 SET NOCOUNT ON;
 
 DECLARE @LookbackDays INT = 7;       -- Lookback window in days
@@ -865,7 +874,6 @@ END
 
 CLOSE dbs;
 DEALLOCATE dbs;
-
 
 SELECT
     SUBSTRING(DatabaseName,1,40) AS DatabaseName,
@@ -1037,5 +1045,5 @@ ORDER BY DatabaseName,
             WHEN 'CPU'      THEN AvgCPUms
             WHEN 'Reads'    THEN AvgLogicalReads
          END DESC;
----------------------------------------------
+--------------------------------------------------------------
 PRINT '[=== End of Emergency Diagnostic ===]';
