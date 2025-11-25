@@ -1,14 +1,15 @@
 /* Emergency Fault Find SQL Instance
    Run in Text format for easier reading
-   V6.0 Last updated 24/11/25 -Adrian Sleigh
-   Fixed formatting results
+   V7.0 Last updated 25/11/25 -Adrian Sleigh
+   Added last used database and most used object
 
- Collects 18 different results to help identify current issues.
+ Collects 20 different results to help identify current issues.
 [1] Instance Info [2] Current Connections [3] Page Life Expectancy [4] CPU Pressure [5] Blocking Sessions
 [6] Transaction Log Usage Summary [7] Long-running Queries (>5 min) [8] Availability Group Health
-[9] Disk Space [10[ Failed Jobs [11] Busiest Databases [12] SQL Server Error Log (Last 100 entries excluding successful logons)
-[13] Database Status [14] Investigate Waits [15] TempDB User Object Usage [16] Top 10 CPU Consumers 
-[17] Index and Statistics [18] Query Store Status.
+[9] Disk Space [10[ Failed Jobs [11] Busiest Databases [12]Last Used Database and Most used Object
+[13] SQL Server Error Log (Last 100 entries excluding successful logons)
+[14] Database Status [15] Investigate Waits [16] TempDB User Object Usage [17] Top 10 CPU Consumers 
+[18] Index and Statistics [19] Query Store Status [20] Worst Queries from Query Store
 
 */
 ---------------------------------------------------
@@ -427,8 +428,83 @@ ORDER BY
     PercentBusy DESC;
 
 -------------------------------------------------------------------------
---12. Error Log Summary
-PRINT '[12.--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
+--12. Last Used Databases and Most used object per database
+PRINT '[12.--- Last Used Database and Most used Object ---]';
+PRINT '----------------------------------------------------'
+
+SET NOCOUNT ON;
+SET ANSI_WARNINGS OFF;
+
+-- Temporary table for database usage
+IF OBJECT_ID('tempdb..#DbUsage1') IS NOT NULL DROP TABLE #DbUsage1;
+CREATE TABLE #DbUsage1 (
+    DatabaseName SYSNAME,
+    LastUserSeek DATETIME NULL,
+    LastUserScan DATETIME NULL,
+    LastUserLookup DATETIME NULL,
+    LastUserUpdate DATETIME NULL
+);
+
+INSERT INTO #DbUsage1
+SELECT 
+    DB_NAME(database_id) AS DatabaseName,
+    MAX(last_user_seek) AS LastUserSeek,
+    MAX(last_user_scan) AS LastUserScan,
+    MAX(last_user_lookup) AS LastUserLookup,
+    MAX(last_user_update) AS LastUserUpdate
+FROM sys.dm_db_index_usage_stats
+WHERE database_id > 4 -- exclude system DBs
+GROUP BY database_id;
+
+-- Temporary table for object usage
+IF OBJECT_ID('tempdb..#ObjectUsage1') IS NOT NULL DROP TABLE #ObjectUsage1;
+CREATE TABLE #ObjectUsage1 (
+    DatabaseName SYSNAME NULL,
+    ObjectName SYSNAME NULL,
+    ExecutionCount BIGINT NULL,
+    LastExecutionTime DATETIME NULL,
+    SQLText NVARCHAR(MAX) NULL
+);
+
+INSERT INTO #ObjectUsage1
+SELECT 
+    DB_NAME(st.dbid) AS DatabaseName,
+    OBJECT_NAME(st.objectid, st.dbid) AS ObjectName,
+    qs.execution_count AS ExecutionCount,
+    qs.last_execution_time,
+    st.text AS SQLText
+FROM sys.dm_exec_query_stats AS qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS st
+WHERE st.dbid > 4 -- exclude system DBs
+  AND DB_NAME(st.dbid) IS NOT NULL; -- filter out NULL database names
+
+-- Final combined report
+SELECT 
+    SUBSTRING(d.DatabaseName,1,40) AS DatabaseName,
+    COALESCE(CONVERT(VARCHAR(19), d.LastUserSeek, 120), 'Never') AS LastUserSeek,
+    COALESCE(CONVERT(VARCHAR(19), d.LastUserScan, 120), 'Never') AS LastUserScan,
+    COALESCE(CONVERT(VARCHAR(19), d.LastUserLookup, 120), 'Never') AS LastUserLookup,
+    COALESCE(CONVERT(VARCHAR(19), d.LastUserUpdate, 120), 'Never') AS LastUserUpdate,
+    SUBSTRING(o.ObjectName,1,40)AS MostUsedObjectName,
+    o.ExecutionCount,
+    COALESCE(CONVERT(VARCHAR(19), o.LastExecutionTime, 120), 'Never') AS LastExecutionTime
+FROM #DbUsage1 d
+LEFT JOIN (
+    SELECT DatabaseName, ObjectName, ExecutionCount, LastExecutionTime
+    FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (PARTITION BY DatabaseName ORDER BY LastExecutionTime DESC) AS rn
+        FROM #ObjectUsage1
+    ) t
+    WHERE rn = 1 -- Top 5 objects per database
+) o ON d.DatabaseName = o.DatabaseName
+ORDER BY d.DatabaseName, o.LastExecutionTime DESC;
+--DROP TABLE #DbUsage1
+SET ANSI_WARNINGS ON;
+
+--------------------------------------------------------------------------
+--13. Error Log Summary
+PRINT '[13.--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
 PRINT '-------------------------------------------------------------------------------'
 
 -- Create temp table
@@ -458,9 +534,9 @@ PRINT '   '
 PRINT N'⚠️ Review above for repeated or critical errors. Investigate login failures, AG issues, or I/O errors.';
 -------------------------------------------------------
 
---13. Database Status
+--14. Database Status
 PRINT '   '
-PRINT '[13.--- Database Status ---]';
+PRINT '[14.--- Database Status ---]';
 PRINT '---------------------------'
 
 IF EXISTS (
@@ -482,13 +558,10 @@ BEGIN
     PRINT N'✅All databases are ONLINE.';
 END
 
---14. Wait issues
+--15. Wait issues
 SET NOCOUNT ON
 PRINT '   '
---14. Wait issues
-SET NOCOUNT ON
-PRINT '   '
-PRINT '[14.--- Investigate Waits ---]';
+PRINT '[15.--- Investigate Waits ---]';
 PRINT '-----------------------------'
 
 ;WITH WaitInfo AS
@@ -561,8 +634,8 @@ FROM sys.dm_db_file_space_usage;
 IF @PagesUsed > 0
 BEGIN
     PRINT '   '
-    PRINT '[15.---TempDB User Object Usage---]';
-	PRINT '---------------------------------------'
+    PRINT '[16.---TempDB User Object Usage---]';
+	PRINT '-----------------------------------'
 
     SELECT 
         ISNULL(SUM(user_object_reserved_page_count), 0) AS [UserObjectPagesUsed],
@@ -571,15 +644,15 @@ BEGIN
 END
 ELSE
 BEGIN 
-  PRINT '[15--- Tempdb Usage ---]   '
+  PRINT '[16--- Tempdb Usage ---]   '
   PRINT N'⚠️TEMPDB IS NOT CURRENTLY IN USE!'
 END
 SET ANSI_WARNINGS ON;   -- Restore default behavior
 ----------------------------------------------------------------------
---16.Top 10 CPU Consumers (Text-view aligned, with totals)
+--17.Top 10 CPU Consumers (Text-view aligned, with totals)
 SET NOCOUNT ON;
 PRINT '   '
-PRINT '[16.---Top 10 CPU Consumers---]';
+PRINT '[17.---Top 10 CPU Consumers---]';
 PRINT '-------------------------------'
 
 -- Fixed widths:
@@ -713,9 +786,9 @@ SELECT
 FROM Agg;
 
 ----------------------------------------------------------------
---17. Index and Stats
+--18. Index and Stats
 
-PRINT '[17.--- Index and Statistics ---]'
+PRINT '[18.--- Index and Statistics ---]'
 PRINT '--------------------------------'
 
 SET NOCOUNT ON;
@@ -790,8 +863,11 @@ FROM #IndexStats
 GROUP BY DbName
 ORDER BY DbName;
 SET ANSI_WARNINGS ON;
+
 -- Top 100  oldestindex maintenance (via stats updated)
 PRINT 'Oldest Index Maintenance';
+PRINT '------------------------';
+
 SELECT TOP 100
     SUBSTRING(DbName,1,40)AS DatabaseName,
     SUBSTRING(ObjectName,1,40) AS ObjectName,
@@ -803,10 +879,11 @@ ORDER BY LastIndexStatsUpdate ASC;
 DROP TABLE #IndexStats
 -------------------------------------------------
 
---18. Query Store Results
+--19. Query Store Results
 
-PRINT '[18.--- Query Store Status ---]';
+PRINT '[19.--- Query Store Status ---]';
 PRINT '-------------------------------'
+PRINT '';
 SET NOCOUNT ON;
 
 DECLARE @LookbackDays INT = 7;       -- Lookback window in days
@@ -1019,7 +1096,9 @@ FROM (
 ) AS x
 WHERE rn = 1;
 
-PRINT '==== Worst Queries from Query Store ====';
+PRINT '[20.--- Worst Queries from Query Store ---]';
+PRINT '-------------------------------------------';
+PRINT '';
 SELECT
     SUBSTRING(DatabaseName,1,40)AS DatabasName,
     MetricCategory,
@@ -1042,5 +1121,8 @@ ORDER BY DatabaseName,
             WHEN 'CPU'      THEN AvgCPUms
             WHEN 'Reads'    THEN AvgLogicalReads
          END DESC;
---------------------------------------------------------------
+-----------------------------------------------
 PRINT '[=== End of Emergency Diagnostic ===]';
+
+
+
