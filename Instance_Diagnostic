@@ -1,20 +1,132 @@
-/* Emergency Fault Find SQL Instance
-   Run in Text format for easier reading
-   V7.0 Last updated 25/11/25 -Adrian Sleigh
-   Added last used database and most used object
 
- Collects 20 different results to help identify current issues.
-[1] Instance Info [2] Current Connections [3] Page Life Expectancy [4] CPU Pressure [5] Blocking Sessions
-[6] Transaction Log Usage Summary [7] Long-running Queries (>5 min) [8] Availability Group Health
-[9] Disk Space [10[ Failed Jobs [11] Busiest Databases [12]Last Used Database and Most used Object
-[13] SQL Server Error Log (Last 100 entries excluding successful logons)
-[14] Database Status [15] Investigate Waits [16] TempDB User Object Usage [17] Top 10 CPU Consumers 
-[18] Index and Statistics [19] Query Store Status [20] Worst Queries from Query Store
+/* Fault Find a SQL Instance
+   Run in Text format for easier reading
+   V8.0 Last updated 26/11/25 -Adrian Sleigh
+   Collects results to help identify current issues.
+   GOTO labels with multi-selection
+   - Set @SelectedItems = 'ALL' to run everything
+   - Or pass a comma-separated list like '1,3,7,20'
+   - Handles trimming, duplicates, invalid tokens, and out-of-range selections
+   - SQL Server 2016 compatible.
+
+[1]Instance Info [2]Current Connections [3]Page Life Expectancy [4]CPU Pressure [5]Blocking Sessions
+[6]Transaction Log Usage Summary [7]Long-running Queries (>5 min) [8]Availability Group Health
+[9]Disk Space [10]Failed Jobs [11]Busiest Databases [12]Last Used Database and Most used Object
+[13]SQL Server Error Log (Last 100 entries excluding successful logons)
+[14]Database Status [15]Investigate Waits [16]TempDB User Object Usage [17]Top 10 CPU Consumers 
+[18]Index and Statistics
+[19]Query Store Status INCLUDING Worst Queries from Query Store
+[20]DDL Change Detection (Last 7 Days)
+
 
 */
----------------------------------------------------
+
 SET NOCOUNT ON;
-PRINT N'=== 📊 SQL Server Emergency Diagnostic Script ===';
+
+DECLARE @SelectedItems NVARCHAR(MAX) = 'ALL';  -- <-- set to 'ALL' or e.g. '1,3,7,20'
+
+DECLARE @Work NVARCHAR(MAX);
+DECLARE @CurrentItem INT;
+DECLARE @pos INT;
+DECLARE @token NVARCHAR(20);
+DECLARE @sep NCHAR(1) = ',';
+
+-- Expand ALL into 1..20 once
+IF UPPER(LTRIM(RTRIM(@SelectedItems))) = 'ALL'
+BEGIN
+    SET @SelectedItems = '1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20';
+END
+
+-- Optional: normalize spaces
+SET @SelectedItems = REPLACE(@SelectedItems, ' ', '');
+
+-- Optional: remove duplicated selections by loading into a table
+IF OBJECT_ID('tempdb..#Sel') IS NOT NULL DROP TABLE #Sel;
+CREATE TABLE #Sel (ItemID INT PRIMARY KEY);
+
+-- Tokenize @SelectedItems and insert distinct ints to #Sel
+SET @Work = @SelectedItems;
+
+Tokenize:
+    IF @Work IS NULL OR @Work = '' GOTO TokenizeDone;
+
+    SET @pos = CHARINDEX(@sep, @Work);
+    IF @pos > 0
+        SET @token = SUBSTRING(@Work, 1, @pos - 1);
+    ELSE
+        SET @token = @Work;
+
+    IF TRY_CONVERT(INT, @token) IS NOT NULL
+    BEGIN
+        SET @CurrentItem = CONVERT(INT, @token);
+        IF @CurrentItem BETWEEN 1 AND 20
+        BEGIN
+            -- Insert distinct; ignore duplicates
+            IF NOT EXISTS (SELECT 1 FROM #Sel WHERE ItemID = @CurrentItem)
+                INSERT INTO #Sel (ItemID) VALUES (@CurrentItem);
+        END
+        ELSE
+        BEGIN
+            PRINT CONCAT('Skipping out-of-range selection (1-20): ', @CurrentItem);
+        END
+    END
+    ELSE
+    BEGIN
+        PRINT CONCAT('Skipping invalid selection: "', @token, '"');
+    END
+
+    IF @pos > 0
+        SET @Work = SUBSTRING(@Work, @pos + 1, LEN(@Work));
+    ELSE
+        SET @Work = NULL;
+
+    GOTO Tokenize;
+
+TokenizeDone:
+    -- Cursor-free loop across selected items in ascending order
+    DECLARE @NextItem INT;
+
+GetNext:
+    SELECT TOP (1) @NextItem = ItemID
+    FROM #Sel
+    ORDER BY ItemID;  -- Change to desired order
+
+    IF @NextItem IS NULL GOTO EndScript;
+
+    -- Route to specific item block
+    IF @NextItem = 1  GOTO Item1;
+    IF @NextItem = 2  GOTO Item2;
+    IF @NextItem = 3  GOTO Item3;
+    IF @NextItem = 4  GOTO Item4;
+    IF @NextItem = 5  GOTO Item5;
+    IF @NextItem = 6  GOTO Item6;
+    IF @NextItem = 7  GOTO Item7;
+    IF @NextItem = 8  GOTO Item8;
+    IF @NextItem = 9  GOTO Item9;
+    IF @NextItem = 10 GOTO Item10;
+    IF @NextItem = 11 GOTO Item11;
+    IF @NextItem = 12 GOTO Item12;
+    IF @NextItem = 13 GOTO Item13;
+    IF @NextItem = 14 GOTO Item14;
+    IF @NextItem = 15 GOTO Item15;
+    IF @NextItem = 16 GOTO Item16;
+    IF @NextItem = 17 GOTO Item17;
+    IF @NextItem = 18 GOTO Item18;
+    IF @NextItem = 19 GOTO Item19;
+	IF @NextItem = 20 GOTO Item20;   
+
+    -- Should never reach here
+    PRINT CONCAT('No handler for item: ', @NextItem);
+    GOTO AfterItem;
+
+--------------------------
+-- Item blocks (put your code in each and end by removing @NextItem and GOTO GetNext)
+--------------------------
+
+Item1:
+
+SET NOCOUNT ON;
+PRINT N'=== 📊 SQL Server Diagnostic Script ===';
 PRINT '[1--- Instance Info ---]'
 --1. Instance Info
 SELECT
@@ -27,8 +139,13 @@ SELECT
     CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 86400) / 3600 AS VARCHAR) + ' hours, ' +
     CAST((DATEDIFF(SECOND, sqlserver_start_time, GETDATE()) % 3600) / 60 AS VARCHAR) + ' minutes'
 FROM sys.dm_os_sys_info;
-------------------------------------------------
---2. DMV-based simplified sp_who2 with ProgramName, Blocking Info, excluding system and SA
+
+
+    GOTO AfterItem;
+-----------------------------------------------------
+Item2:
+  
+      --2. DMV-based simplified sp_who2 with ProgramName, Blocking Info, excluding system and SA
 PRINT '[2.--- Current Connections ---]';
 PRINT '-------------------------------------'
 
@@ -57,8 +174,14 @@ WHERE s.session_id <> @@SPID
   AND s.login_name <> 'sa'               -- SA
   AND s.login_name <> 'moxireader'       -- Excludes
 ORDER BY r.cpu_time DESC;
-----------------------------------------------------------------
---3. Page Life Expectancy
+
+    GOTO AfterItem;
+------------------------------------------------------
+Item3:
+
+    PRINT '[3.--- Page Life Expectancy ---]';
+    PRINT '-------------------------------------'
+	--3. Page Life Expectancy
 SET NOCOUNT ON
 DECLARE @PLE INT;
 
@@ -66,9 +189,6 @@ SELECT @PLE = cntr_value
 FROM sys.dm_os_performance_counters
 WHERE object_name LIKE '%Buffer Manager%'
   AND counter_name = 'Page life expectancy';
-
-PRINT '[3.--- Page Life Expectancy ---]';
-PRINT '-------------------------------------'
 
 SELECT
     @PLE AS PageLifeExpectancy,
@@ -90,9 +210,12 @@ ELSE
 BEGIN
     PRINT N'✅ Page Life Expectancy is within acceptable range.';
 END
-------------------------------------------------------------------
+    
+    GOTO AfterItem;
+--------------------------------------------------------
+Item4:
 
---4. CPU Pressure
+      --4. CPU Pressure
 PRINT '   '
 PRINT '[4.--- CPU Pressure ---]';
 PRINT '---------------------------'
@@ -102,11 +225,14 @@ SELECT
     available_physical_memory_kb / 1024 AS AvailableMemoryMB,
     SUBSTRING(system_memory_state_desc,1,40)AS System_Memory_Desc
 FROM sys.dm_os_sys_memory;
-------------------------------------------------------------------
 
---5. Blocking Sessions
-PRINT '[5.--- Blocking Sessions ---]';
-PRINT '--------------------------------'
+    GOTO AfterItem;
+----------------------------------------------
+Item5:
+
+ --5. Blocking Sessions
+  PRINT '[5.--- Blocking Sessions ---]';
+  PRINT '--------------------------------'
 
 IF EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id <> 0)
 BEGIN 
@@ -127,11 +253,15 @@ END
 ELSE
 BEGIN
     PRINT '   '
-    PRINT N'✅No blocking sessions detected.';
+    PRINT N'✅ No blocking sessions detected.';
 END
-------------------------------------------------------------------------
+    GOTO AfterItem;
 
+------------------------------------------
+
+Item6:
 -- 6. Transaction Log Usage
+
 PRINT '   ';
 PRINT '[6.---Transaction Log Usage Summary---]';
 PRINT '--------------------------------------';
@@ -193,8 +323,11 @@ ELSE
 BEGIN
     PRINT N'✅ All databases are below the transaction log usage threshold.';
 END
+    GOTO AfterItem;
 
--------------------------------------------------------------
+------------------------------------------------------
+Item7:
+
 --7. Long-running Queries
 PRINT '   '
 PRINT '[7.--- Long-running Queries (>5 min) ---]';
@@ -224,9 +357,14 @@ END
 ELSE
 BEGIN
     PRINT '   '
-    PRINT N'✅No long-running queries over 5 minutes.';
+    PRINT N'✅ No long-running queries over 5 minutes.';
 END
---------------------------------------------------------------
+ 
+    GOTO AfterItem;
+
+-------------------------------------------------
+Item8:
+
 --8.  Availability Group Health
 PRINT '   '
 PRINT '[8.--- Availability Group Health ---]';
@@ -264,7 +402,7 @@ BEGIN
     ELSE
     BEGIN
 	    PRINT '   '
-        PRINT N'✅AG Health OK: All replicas synchronized and queues within normal range.';
+        PRINT N'✅ AG Health OK: All replicas synchronized and queues within normal range.';
     END
 END
 ELSE
@@ -272,7 +410,11 @@ BEGIN
     PRINT '   '
     PRINT 'Skipped: This instance is not AG PRIMARY.';
 END
-------------------------------------------------------------------------------------
+    GOTO AfterItem;
+
+-----------------------------------------------
+Item9:
+
 --9. DiskSpace
 SET NOCOUNT ON
 PRINT '   ';
@@ -337,8 +479,12 @@ IF @CriticalCount = 0 AND @WarningCount = 0
     PRINT N'🟢 All vols ≥ 20% free.';
     PRINT '   ';
 Drop table #DiskInfo
----------------------------------------------------------------------------------------------------
----10. Failed Jobs
+    GOTO AfterItem;
+
+------------------------------------------
+Item10:
+
+ ---10. Failed Jobs
 PRINT '[10.--- Failed Jobs ---]';
 PRINT '-----------------------'
 
@@ -387,14 +533,20 @@ END
 ELSE
 BEGIN
     PRINT '   '
-    PRINT N'✅All SQL Agent jobs succeeded in the last 24 hours.';
+    PRINT N'✅ All SQL Agent jobs succeeded in the last 24 hours.';
+	PRINT '   ';
 END
-------------------------------------------------------------------------
+
+    GOTO AfterItem;
+
+--------------------------------------------
+Item11:
+
  --11. Busiest Databases
   PRINT '[11.--- Busiest Databases ---]'
-  PRINT '-----------------------------'
+  PRINT '-----------------------------';
 
-  GO
+ -- GO
 WITH db_stats AS (
     SELECT 
         DB_NAME(CAST(pa.value AS INT)) AS database_name,
@@ -426,8 +578,11 @@ FROM
     db_stats
 ORDER BY 
     PercentBusy DESC;
+    GOTO AfterItem;
 
--------------------------------------------------------------------------
+--------------------------------------------
+Item12:
+
 --12. Last Used Databases and Most used object per database
 PRINT '[12.--- Last Used Database and Most used Object ---]';
 PRINT '----------------------------------------------------'
@@ -501,9 +656,11 @@ LEFT JOIN (
 ORDER BY d.DatabaseName, o.LastExecutionTime DESC;
 --DROP TABLE #DbUsage1
 SET ANSI_WARNINGS ON;
-
---------------------------------------------------------------------------
---13. Error Log Summary
+    GOTO AfterItem;
+-----------------------------------------------
+Item13:
+  
+  --13. Error Log Summary
 PRINT '[13.--- SQL Server Error Log (Last 100 entries excluding successful logons) ---]';
 PRINT '-------------------------------------------------------------------------------'
 
@@ -532,9 +689,12 @@ ORDER BY LogDate DESC;
 DROP TABLE #ErrorLog;
 PRINT '   '
 PRINT N'⚠️ Review above for repeated or critical errors. Investigate login failures, AG issues, or I/O errors.';
--------------------------------------------------------
+    GOTO AfterItem;
 
---14. Database Status
+----------------------------------------------
+Item14:
+
+  --14. Database Status
 PRINT '   '
 PRINT '[14.--- Database Status ---]';
 PRINT '---------------------------'
@@ -555,8 +715,13 @@ END
 ELSE
 BEGIN
     PRINT '   '
-    PRINT N'✅All databases are ONLINE.';
+    PRINT N'✅ All databases are ONLINE.';
 END
+
+    GOTO AfterItem;
+
+-----------------------------------------------
+Item15:
 
 --15. Wait issues
 SET NOCOUNT ON
@@ -621,8 +786,12 @@ ORDER BY ws.wait_time_ms DESC;
 PRINT '   '
 PRINT N'⚠️ Only waits that may indicate performance issues are shown above. Review Category and Impact for troubleshooting guidance.';
 PRINT '   '
----------------------------------------------------------------
---15. Check tempdb current useage
+    GOTO AfterItem;
+
+--------------------------------------------------
+Item16:
+
+--16. Check tempdb current useage
 SET NOCOUNT ON;
 SET ANSI_WARNINGS OFF;  -- Suppress NULL aggregate warning
 
@@ -647,9 +816,13 @@ BEGIN
   PRINT '[16--- Tempdb Usage ---]   '
   PRINT N'⚠️TEMPDB IS NOT CURRENTLY IN USE!'
 END
-SET ANSI_WARNINGS ON;   -- Restore default behavior
-----------------------------------------------------------------------
---17.Top 10 CPU Consumers (Text-view aligned, with totals)
+SET ANSI_WARNINGS ON;   -- Restore default behaviour
+    GOTO AfterItem;
+
+----------------------------------------------
+Item17:
+
+  --17.Top 10 CPU Consumers (Text-view aligned, with totals)
 SET NOCOUNT ON;
 PRINT '   '
 PRINT '[17.---Top 10 CPU Consumers---]';
@@ -785,34 +958,41 @@ SELECT
     ) AS [Summary]
 FROM Agg;
 
-----------------------------------------------------------------
---18. Index and Stats
+    GOTO AfterItem;
 
-PRINT '[18.--- Index and Statistics ---]'
-PRINT '--------------------------------'
+-------------------------------------------------
+Item18:
+
+ --18. Index and Stats
+PRINT '[18.--- Index and Statistics ---]';
+PRINT '--------------------------------';
 
 SET NOCOUNT ON;
+
 IF OBJECT_ID('tempdb..#IndexStats') IS NOT NULL DROP TABLE #IndexStats;
 CREATE TABLE #IndexStats (
-    DbName               sysname               NULL,
-    ObjectName           sysname               NULL,
-    IndexName            NVARCHAR(200)         NULL,  -- allow NULLs (heaps) or set placeholder in INSERT
-    IndexType            NVARCHAR(60)          NULL,
-    IsDisabled           bit                   NULL,
-    IsHypothetical       bit                   NULL,
-    LastIndexStatsUpdate datetime              NULL
+    DbName               sysname        NULL,
+    SchemaName           sysname        NULL,
+    BaseObjectName       sysname        NULL,
+    FullObjectName       AS (QUOTENAME(SchemaName) + '.' + QUOTENAME(BaseObjectName)) PERSISTED,
+    IndexName            NVARCHAR(200)  NULL,
+    IndexType            NVARCHAR(60)   NULL,
+    IsDisabled           bit            NULL,
+    IsHypothetical       bit            NULL,
+    LastIndexStatsUpdate datetime       NULL
 );
 
-DECLARE @sql nvarchar(max) = N'';
+DECLARE @sql NVARCHAR(MAX) = N'';
 
--- Build dynamic SQL for all online, writable user databases using FOR XML PATH
+-- Build dynamic SQL for all online, writable user databases
 SELECT @sql = (
     SELECT '
 USE ' + QUOTENAME(name) + ';
-INSERT INTO #IndexStats (DbName, ObjectName, IndexName, IndexType, IsDisabled, IsHypothetical, LastIndexStatsUpdate)
+INSERT INTO #IndexStats (DbName, SchemaName, BaseObjectName, IndexName, IndexType, IsDisabled, IsHypothetical, LastIndexStatsUpdate)
 SELECT
     DB_NAME() AS DbName,
-    QUOTENAME(OBJECT_SCHEMA_NAME(i.object_id)) + ''.'' + QUOTENAME(OBJECT_NAME(i.object_id)) AS ObjectName,
+    OBJECT_SCHEMA_NAME(i.object_id) AS SchemaName,
+    OBJECT_NAME(i.object_id) AS BaseObjectName,
     CASE 
         WHEN i.index_id = 0 THEN ''(HEAP)''
         ELSE ISNULL(i.name, ''(Unnamed)'')
@@ -837,49 +1017,53 @@ WHERE i.object_id > 0
   AND i.index_id >= 0;
 '
     FROM sys.databases
-    WHERE database_id > 4              -- user databases only
-      AND state = 0                    -- online
-      AND is_read_only = 0             -- writable
+    WHERE database_id > 4       -- user DBs only
+      AND state = 0             -- online
+      AND is_read_only = 0      -- writable
     FOR XML PATH(''), TYPE
 ).value('.', 'NVARCHAR(MAX)');
 
 -- Execute the dynamic SQL
 EXEC sp_executesql @sql;
 
-SET ANSI_WARNINGS OFF;
 -- Instance-wide max last index stats update
 PRINT '[Last Index Maintenance]';
 SELECT MAX(LastIndexStatsUpdate) AS InstanceLastIndexMaintenance
 FROM #IndexStats;
 
-----------------------------------------------------------------
+------------------------
 -- Per-database summary
 SELECT 
-    SUBSTRING(DbName,1,40) AS DatabaseName,
+    DbName AS DatabaseName,
     MAX(LastIndexStatsUpdate) AS DbLastIndexStatsUpdate,
-    SUM(CASE WHEN LastIndexStatsUpdate IS NOT NULL AND LastIndexStatsUpdate >= DATEADD(day, -1, SYSDATETIME()) THEN 1 ELSE 0 END) AS UpdatedLast24h,
+    SUM(CASE WHEN LastIndexStatsUpdate IS NOT NULL 
+             AND LastIndexStatsUpdate >= DATEADD(day, -1, SYSDATETIME()) 
+        THEN 1 ELSE 0 END) AS UpdatedLast24h,
     COUNT(*) AS TotalIndexes
 FROM #IndexStats
 GROUP BY DbName
 ORDER BY DbName;
-SET ANSI_WARNINGS ON;
 
--- Top 100  oldestindex maintenance (via stats updated)
+-- Top 100 oldest index maintenance
 PRINT 'Oldest Index Maintenance';
 PRINT '------------------------';
 
 SELECT TOP 100
-    SUBSTRING(DbName,1,40)AS DatabaseName,
-    SUBSTRING(ObjectName,1,40) AS ObjectName,
-    SUBSTRING(ISNULL(IndexName, '(HEAP)'),1,40) AS IndexName,
+    DbName AS DatabaseName,
+    FullObjectName,
+    ISNULL(IndexName, '(HEAP)') AS IndexName,
     LastIndexStatsUpdate
 FROM #IndexStats
 WHERE LastIndexStatsUpdate IS NOT NULL
 ORDER BY LastIndexStatsUpdate ASC;
-DROP TABLE #IndexStats
--------------------------------------------------
 
---19. Query Store Results
+DROP TABLE #IndexStats;
+GOTO AfterItem;
+   
+-----------------------------------------------
+Item19:
+
+  --19. Query Store Results
 
 PRINT '[19.--- Query Store Status ---]';
 PRINT '-------------------------------'
@@ -958,10 +1142,10 @@ SELECT
     IsQueryStoreEnabled,
     IsReadOnly,
     StatusHighlight = CASE
-        WHEN IsQueryStoreAvailable = 0 THEN N'⚠️Query Store not supported or inaccessible'
-        WHEN IsQueryStoreEnabled = 0 THEN N'⚠️Query Store NOT enabled'
+        WHEN IsQueryStoreAvailable = 0 THEN N'⚠️ Query Store not supported or inaccessible'
+        WHEN IsQueryStoreEnabled = 0 THEN N'⚠️ Query Store NOT enabled'
         WHEN ActualStateDesc = 'READ_ONLY' THEN 'Query Store read-only (capture stopped)'
-        ELSE N'✅Query Store enabled'
+        ELSE N'✅ Query Store enabled'
     END
 FROM #DbStatus
 ORDER BY IsQueryStoreEnabled DESC, DatabaseName;
@@ -1096,8 +1280,8 @@ FROM (
 ) AS x
 WHERE rn = 1;
 
-PRINT '[20.--- Worst Queries from Query Store ---]';
-PRINT '-------------------------------------------';
+PRINT '[--- Worst Queries from Query Store ---]';
+PRINT  '---------------------------------------';
 PRINT '';
 SELECT
     SUBSTRING(DatabaseName,1,40)AS DatabasName,
@@ -1122,7 +1306,114 @@ ORDER BY DatabaseName,
             WHEN 'Reads'    THEN AvgLogicalReads
          END DESC;
 -----------------------------------------------
-PRINT '[=== End of Emergency Diagnostic ===]';
 
+    GOTO AfterItem;
 
+-------------------------------------------------------
+Item20:
+
+PRINT  '[20. --- DDL Change Detection (Last 7 Days)---]'
+PRINT  '----------------------------------------------';
+DECLARE @ddl_count INT;
+
+-- Count DDL events in the last 7 days
+SELECT @ddl_count = COUNT(*)
+FROM fn_trace_gettable(CONVERT(VARCHAR(255), 
+    (SELECT TOP 1 value 
+     FROM sys.fn_trace_getinfo(NULL) 
+     WHERE property = 2)), DEFAULT) T
+     WHERE T.EventClass IN (46,47,164) -- Object:Created,Deleted,Altered
+  AND T.StartTime >= DATEADD(DAY, -7, GETDATE());
+
+-- Conditional output
+IF @ddl_count > 0
+BEGIN
+    PRINT N'⚠️ Recent DDL Changes (Last 7 Days)';
+    SELECT 
+        SUBSTRING(TE.name,1,30) AS EventName,
+        SUBSTRING(T.DatabaseName,1,30) AS DatabaseName,
+        SUBSTRING(T.ObjectName,1,30) AS ObjectName,
+        T.ObjectType,
+        T.TextData,
+        SUBSTRING(T.LoginName,1,40) AS LoginName,
+        SUBSTRING(T.HostName,1,40) AS HostName,
+        SUBSTRING(T.ApplicationName,1,40) AS ApplicationName,
+        T.StartTime
+    FROM fn_trace_gettable(CONVERT(VARCHAR(255), 
+        (SELECT TOP 1 value 
+         FROM sys.fn_trace_getinfo(NULL) 
+         WHERE property = 2)), DEFAULT) T
+    JOIN sys.trace_events TE ON T.EventClass = TE.trace_event_id
+    WHERE T.EventClass IN (46,47,164)
+	  AND T.DatabaseName <> 'Tempdb'
+      AND T.StartTime >= DATEADD(DAY, -7, GETDATE())
+    ORDER BY T.StartTime DESC;
+END
+ELSE
+BEGIN
+    PRINT N'✅ No DDL Changes found in the last 7 Days';
+END
+
+-- 2. Recently Modified Objects
+
+IF EXISTS (
+    SELECT 1 
+    FROM sys.objects 
+    WHERE modify_date >= DATEADD(DAY, -7, GETDATE())
+)
+BEGIN
+    SELECT 
+        SUBSTRING(name, 1, 30) AS ObjectName,
+        SUBSTRING(type_desc, 1, 30) AS ObjDescription,
+        create_date,
+        modify_date
+    FROM sys.objects
+    WHERE modify_date >= DATEADD(DAY, -7, GETDATE())
+    ORDER BY modify_date DESC;
+END
+ELSE
+BEGIN
+    PRINT N'✅ No recent object modifications found in the last 7 days';
+END
+
+-- 3. Recent Login Creations or Changes
+
+IF EXISTS (
+    SELECT 1
+    FROM sys.server_principals
+    WHERE create_date >= DATEADD(DAY, -7, GETDATE())
+       OR modify_date >= DATEADD(DAY, -7, GETDATE())
+)
+BEGIN
+PRINT N'⚠️ Recent login creations or modifications found in the last 7 days';
+    SELECT 
+        SUBSTRING(name, 1, 40) AS LoginName,
+        SUBSTRING(type_desc, 1, 20) AS Type,
+        create_date,
+        modify_date
+    FROM sys.server_principals
+    WHERE create_date >= DATEADD(DAY, -7, GETDATE())
+       OR modify_date >= DATEADD(DAY, -7, GETDATE())
+    ORDER BY modify_date DESC;
+END
+ELSE
+BEGIN
+    PRINT N'✅ No recent login creations or modifications found in the last 7 days';
+END
+
+GOTO AfterItem;
+
+--------------------------
+-- Return to driver to fetch next item
+--------------------------
+AfterItem:
+    -- Remove the processed item so the next one can be fetched
+    DELETE FROM #Sel WHERE ItemID = @NextItem;
+    SET @NextItem = NULL;
+    GOTO GetNext;
+
+EndScript:
+  
+    PRINT '';
+	PRINT '[=== End of Diagnostics ===]';
 
