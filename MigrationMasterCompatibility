@@ -1,0 +1,200 @@
+--CHECK FOR COMPATIBILITY ISSUE IN MASTER DATABASE POST VERSION UPGRADE
+--V1.0 27/11/25 Adrian Sleigh
+-----------------------------------------------------------------------
+USE master;
+SET NOCOUNT ON;
+
+-- ============================================
+-- CONFIGURATION
+-- ============================================
+DECLARE @DryRun BIT = 1; -- Set to 1 for DRY RUN (skip execution), 0 for full execution
+
+-- ============================================
+-- TEMP TABLE FOR RESULTS
+-- ============================================
+IF OBJECT_ID('tempdb..#MasterUpgradeTest') IS NOT NULL DROP TABLE #MasterUpgradeTest;
+CREATE TABLE #MasterUpgradeTest (
+    ObjectName NVARCHAR(255),
+    ObjectType NVARCHAR(50),
+    StartTime DATETIME,
+    EndTime DATETIME,
+    DurationMs BIGINT,
+    ErrorMessage NVARCHAR(MAX),
+    DeprecatedFound NVARCHAR(MAX),
+    Remediation NVARCHAR(MAX),
+    Severity NVARCHAR(MAX)
+);
+
+DECLARE @ObjectName NVARCHAR(255), 
+        @ObjectType NVARCHAR(50), 
+        @SQL NVARCHAR(MAX), 
+        @ErrorMessage NVARCHAR(MAX),
+        @Deprecated NVARCHAR(MAX),
+        @Remediation NVARCHAR(MAX),
+        @Severity NVARCHAR(MAX);
+
+DECLARE @StartTime DATETIME, @EndTime DATETIME;
+
+-- ============================================
+-- DEPRECATED KEYWORDS AND FIXES WITH SEVERITY
+-- ============================================
+DECLARE @DeprecatedKeywords TABLE (
+    Keyword NVARCHAR(100),
+    Fix NVARCHAR(200),
+    Severity NVARCHAR(10)
+);
+
+-- Add keywords, remediation, and severity
+INSERT INTO @DeprecatedKeywords VALUES
+('TEXT', 'Use VARCHAR(MAX) instead', 'High'),
+('NTEXT', 'Use NVARCHAR(MAX) instead', 'High'),
+('IMAGE', 'Use VARBINARY(MAX) instead', 'High'),
+('RAISERROR', 'Use THROW instead', 'Medium'),
+('SET ROWCOUNT', 'Use TOP in SELECT instead', 'Medium'),
+('FASTFIRSTROW', 'Use OPTION (FAST n) instead', 'Medium'),
+('DBCC DBREINDEX', 'Use ALTER INDEX REBUILD instead', 'High'),
+('DBCC INDEXDEFRAG', 'Use ALTER INDEX REORGANIZE instead', 'High'),
+('DBCC PINTABLE', 'Removed; no replacement', 'High'),
+('DBCC TEXTALL', 'Removed; no replacement', 'High'),
+('DBCC TEXTALLOC', 'Removed; no replacement', 'High'),
+('SET FMTONLY', 'Use sp_describe_first_result_set instead', 'High'),
+('SET SHOWPLAN_TEXT', 'Use SET SHOWPLAN_XML or Query Store', 'Low'),
+('SET SHOWPLAN_ALL', 'Use SET SHOWPLAN_XML or Query Store', 'Low'),
+('SET SHOWPLAN ON', 'Use SET SHOWPLAN_XML or Query Store', 'Low'),
+('SET OFFSETS', 'Remove; no replacement', 'Low'),
+('SET FORCEPLAN', 'Avoid; use proper indexing', 'Low'),
+('SET ANSI_DEFAULTS', 'Avoid; use explicit ANSI settings', 'Low'),
+('SET CURSOR_CLOSE_ON_COMMIT', 'Avoid; use explicit cursor handling', 'Low'),
+('SET IMPLICIT_TRANSACTIONS', 'Avoid; use explicit transactions', 'Low'),
+('SET LANGUAGE', 'Avoid; use session-level settings', 'Low'),
+('SET LOCK_TIMEOUT', 'Avoid; use TRY/CATCH for deadlocks', 'Low'),
+('SET QUOTED_IDENTIFIER OFF', 'Always use ON', 'Medium'),
+('SET STATISTICS IO', 'Use Extended Events or Query Store', 'Low'),
+('SET STATISTICS TIME', 'Use Extended Events or Query Store', 'Low'),
+('SET STATISTICS PROFILE', 'Use SET STATISTICS XML', 'Low'),
+('SET STATISTICS XML', 'Use Query Store or Extended Events', 'Low'),
+('sp_dboption', 'Use ALTER DATABASE instead', 'High'),
+('sp_helpindex', 'Use sys.indexes DMV instead', 'Medium'),
+('sp_helptext', 'Use sys.sql_modules instead', 'Medium'),
+('sp_password', 'Use ALTER LOGIN instead', 'High'),
+('sp_resetstatus', 'Use ALTER DATABASE instead', 'High'),
+('sp_helpconstraint', 'Use sys.check_constraints instead', 'Low'),
+('sp_helpuser', 'Use sys.database_principals instead', 'Low'),
+('sp_helpgroup', 'Use sys.database_principals instead', 'Low');
+
+-- ============================================
+-- EXCLUSION LISTS
+-- ============================================
+DECLARE @ExcludeObjects TABLE (ObjectName NVARCHAR(255));
+INSERT INTO @ExcludeObjects VALUES ('sp_help_revlogin'), ('sp_password');
+
+DECLARE @ExcludePatterns TABLE (Pattern NVARCHAR(255));
+INSERT INTO @ExcludePatterns VALUES ('sp_help_%'), ('sp_MS%');
+
+-- ============================================
+-- CURSOR FOR CUSTOM OBJECTS
+-- ============================================
+DECLARE cur CURSOR FOR
+SELECT name, type_desc
+FROM sys.objects
+WHERE is_ms_shipped = 0
+AND name NOT IN (SELECT ObjectName FROM @ExcludeObjects)
+AND NOT EXISTS (
+    SELECT 1 FROM @ExcludePatterns WHERE name LIKE Pattern
+);
+
+OPEN cur;
+FETCH NEXT FROM cur INTO @ObjectName, @ObjectType;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @StartTime = GETDATE();
+    SET @ErrorMessage = NULL;
+
+    IF @DryRun = 0
+    BEGIN
+        -- Build execution statement
+        SET @SQL = CASE 
+            WHEN @ObjectType LIKE '%VIEW%' THEN 'SELECT TOP 10 * FROM ' + QUOTENAME(@ObjectName)
+            ELSE 'EXEC ' + QUOTENAME(@ObjectName)
+        END;
+
+        BEGIN TRY
+            EXEC sp_executesql @SQL;
+        END TRY
+        BEGIN CATCH
+            SET @ErrorMessage = ERROR_MESSAGE();
+        END CATCH;
+    END
+    ELSE
+    BEGIN
+        -- DRY RUN: Skip execution
+        SET @ErrorMessage = 'Skipped (DRY RUN)';
+    END
+
+    SET @EndTime = GETDATE();
+
+    -- Check for deprecated syntax and remediation
+    SELECT @Deprecated = STRING_AGG(Keyword, ', '),
+           @Remediation = STRING_AGG(Fix, '; '),
+           @Severity = STRING_AGG(Severity, ', ')
+    FROM @DeprecatedKeywords
+    WHERE EXISTS (
+        SELECT 1 FROM sys.sql_modules m
+        WHERE m.object_id = OBJECT_ID(@ObjectName)
+        AND m.definition LIKE '%' + Keyword + '%'
+    );
+
+    -- Insert results
+    INSERT INTO #MasterUpgradeTest
+    SELECT @ObjectName, @ObjectType, @StartTime, @EndTime,
+           DATEDIFF(MILLISECOND, @StartTime, @EndTime),
+           @ErrorMessage,
+           ISNULL(@Deprecated, 'None'),
+           ISNULL(@Remediation, 'No action needed'),
+           ISNULL(@Severity, 'None');
+
+    FETCH NEXT FROM cur INTO @ObjectName, @ObjectType;
+END
+
+CLOSE cur;
+DEALLOCATE cur;
+
+-- ============================================
+-- SUMMARY
+-- ============================================
+PRINT '--- Summary ---';
+SELECT 
+    COUNT(*) AS TotalObjectsTested,
+    SUM(CASE WHEN DeprecatedFound <> 'None' THEN 1 ELSE 0 END) AS ObjectsWithDeprecatedSyntax
+FROM #MasterUpgradeTest;
+
+-- Compatibility level
+PRINT '--- Master Database Compatibility Level ---';
+SELECT name AS DatabaseName, compatibility_level,
+       CASE compatibility_level
+           WHEN 100 THEN 'SQL Server 2008'
+           WHEN 110 THEN 'SQL Server 2012'
+           WHEN 120 THEN 'SQL Server 2014'
+           WHEN 130 THEN 'SQL Server 2016'
+           WHEN 140 THEN 'SQL Server 2017'
+           WHEN 150 THEN 'SQL Server 2019'
+           WHEN 160 THEN 'SQL Server 2022'
+           WHEN 170 THEN 'SQL Server 2025'
+           ELSE 'Unknown'
+       END AS CompatibilityDescription
+FROM sys.databases
+WHERE name = 'master';
+
+-- ============================================
+-- FINAL OUTPUT WITH TRUNCATION
+-- ============================================
+PRINT '--- Detailed Results (Truncated for Readability) ---';
+SELECT
+    LEFT(ObjectName, 40) AS ObjectName,
+    LEFT(ObjectType, 30) AS ObjectType,
+    LEFT(ISNULL(DeprecatedFound, 'None'), 50) AS DeprecationFound,
+    LEFT(Remediation, 80) AS Remediation,
+    LEFT(Severity, 20) AS Severity
+FROM #MasterUpgradeTest
+ORDER BY ObjectName;
