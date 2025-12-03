@@ -2,8 +2,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 10/11/25
---Version 30.0 added SSISDB report
+--Written By Adrian Sleigh 03/12/25
+--Version 31.0 Added SQL 2025 version check
 ---------------------------------------------------------------------------
 PRINT N'📊 Generating Report...';
 SELECT
@@ -31,16 +31,22 @@ DECLARE @MajorVersion   INT          = TRY_CONVERT(INT, LEFT(@CurrentVersion, CH
 DECLARE @VersionName   NVARCHAR(50);
 DECLARE @LatestVersion NVARCHAR(50); -- four-part version string per branch
 
--- Map major versions to friendly names & latest known builds (Aug 2025)
-IF @MajorVersion = 16
+-- Map major versions to friendly names & latest known builds
+
+IF @MajorVersion = 17
+BEGIN
+    SET @VersionName   = N'SQL Server 2025';
+    SET @LatestVersion = N'17.0.1000.7'; -- 18/11/25 SQL Server 2025 
+END
+ELSE IF @MajorVersion = 16
 BEGIN
     SET @VersionName   = N'SQL Server 2022';
-    SET @LatestVersion = N'16.0.4210.1'; -- SQL Server 2022 CU20 (Aug 2025)
+    SET @LatestVersion = N'16.0.4225.2'; -- SQL Server 2022 CU22 (Nov 2025)
 END
 ELSE IF @MajorVersion = 15
 BEGIN
     SET @VersionName   = N'SQL Server 2019';
-    SET @LatestVersion = N'15.0.4435.7'; -- SQL Server 2019 CU32 (Aug 2025)
+    SET @LatestVersion = N'15.0.4452.2'; -- SQL Server 2019 CU32 (Nov 2025)
 END
 ELSE IF @MajorVersion = 14
 BEGIN
@@ -2939,6 +2945,14 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
+
+
+
+
+
+
+
+
 
 
 
