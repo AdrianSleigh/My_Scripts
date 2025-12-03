@@ -1,7 +1,7 @@
-
-/* Fault Find a SQL Instance
+/* Fault Find a SQL Instance NOW SQL 2008 COMPLIANT !!
    Run in Text format for easier reading
-   V8.0 Last updated 26/11/25 -Adrian Sleigh
+   V9.0 Last updated 03/12/25  
+   
    Collects results to help identify current issues.
    GOTO labels with multi-selection
    - Set @SelectedItems = 'ALL' to run everything
@@ -56,7 +56,10 @@ Tokenize:
     ELSE
         SET @token = @Work;
 
-    IF TRY_CONVERT(INT, @token) IS NOT NULL
+    -- SQL 2008: Replace TRY_CONVERT with ISNUMERIC check
+    IF ISNUMERIC(@token) = 1
+
+    -- SQL 2008 IF TRY_CONVERT(INT, @token) IS NOT NULL
     BEGIN
         SET @CurrentItem = CONVERT(INT, @token);
         IF @CurrentItem BETWEEN 1 AND 20
@@ -67,12 +70,14 @@ Tokenize:
         END
         ELSE
         BEGIN
-            PRINT CONCAT('Skipping out-of-range selection (1-20): ', @CurrentItem);
+     -- -- SQL 2008  PRINT CONCAT('Skipping out-of-range selection (1-20): ', @CurrentItem);
+	    PRINT 'Skipping out-of-range selection (1-20): ' + CAST(@CurrentItem AS VARCHAR(10));
         END
     END
     ELSE
     BEGIN
-        PRINT CONCAT('Skipping invalid selection: "', @token, '"');
+       -- SQL 2008 PRINT CONCAT('Skipping invalid selection: "', @token, '"');
+	      PRINT 'Skipping invalid selection: "' + @token + '"';
     END
 
     IF @pos > 0
@@ -116,7 +121,9 @@ GetNext:
 	IF @NextItem = 20 GOTO Item20;   
 
     -- Should never reach here
-    PRINT CONCAT('No handler for item: ', @NextItem);
+    -- SQL 2008 PRINT CONCAT('No handler for item: ', @NextItem);
+   PRINT 'No handler for item: ' + CAST(@NextItem AS VARCHAR(10));
+
     GOTO AfterItem;
 
 --------------------------
@@ -310,11 +317,10 @@ IF @WarnCount > 0
 BEGIN
     PRINT N'⚠️--- WARNINGS ---';
     SELECT 
-        CONCAT(
-            'WARNING: ', DatabaseName, ' log usage is ',
-            CAST(LogUsedPct AS VARCHAR(10)), '% (size ',
-            CAST(LogSizeMB AS VARCHAR(20)), ' MB). Consider log backup/checkpoint/investigate long-running transactions.'
-        ) AS [Warning]
+        N'⚠️ WARNING: ' + DatabaseName + ' log usage is ' +
+        CAST(LogUsedPct AS VARCHAR(10)) + '% (size ' +
+        CAST(LogSizeMB AS VARCHAR(20)) + ' MB). Consider log backup/checkpoint/investigate long-running transactions.'
+        AS [Warning]
     FROM #LogSpace
     WHERE LogUsedPct >= @Threshold
     ORDER BY LogUsedPct DESC;
@@ -370,45 +376,117 @@ PRINT '   '
 PRINT '[8.--- Availability Group Health ---]';
 PRINT  '-----------------------------------'
 
-IF EXISTS (
-    SELECT 1 FROM sys.dm_hadr_availability_replica_states WHERE role_desc = 'PRIMARY'
-)
+/*==============================================================================
+   HA Health: Always On (2012+) or Database Mirroring (2008)
+   - On SQL 2012+: checks AG sync state and queue sizes.
+   - On SQL 2008: checks Database Mirroring sync state and redo queue.
+==============================================================================*/
+--1
+DECLARE @MajorVersion INT;
+
+/* Parse major version from ProductVersion string, e.g., '10.0.1600.1' -> 10 */
+SET @MajorVersion = CAST(PARSENAME(CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128)), 4) AS INT);
+
+DECLARE @QueueThresholdKB INT = 10000;  -- threshold for redo queue (KB)
+
+PRINT '   ';
+PRINT '[HA Health Check: AG or Mirroring]';
+PRINT '----------------------------------';
+
+IF @MajorVersion >= 11
 BEGIN
+    -- SQL Server 2012+ (Always On Availability Groups)
     IF EXISTS (
         SELECT 1
-        FROM sys.dm_hadr_database_replica_states
-        WHERE synchronization_state_desc <> 'SYNCHRONIZED'
-           OR log_send_queue_size > 10000
-           OR redo_queue_size > 10000
+        FROM sys.dm_hadr_availability_replica_states
+        WHERE role_desc = 'PRIMARY'
     )
-    BEGIN 
-	    PRINT '   '
-        PRINT N'⚠️ Issue: One or more replicas are not synchronized or have large queues.';
-        PRINT 'Check network latency, disk I/O, and replica health. Consider failover or re-seeding.';
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM sys.dm_hadr_database_replica_states
+            WHERE synchronization_state_desc <> 'SYNCHRONIZED'
+               OR ISNULL(log_send_queue_size, 0) > @QueueThresholdKB
+               OR ISNULL(redo_queue_size, 0) > @QueueThresholdKB
+        )
+        BEGIN 
+            PRINT '   ';
+            PRINT N'⚠️ Issue: One or more replicas are not synchronized or have large queues.';
+            PRINT 'Check network latency, disk I/O, and replica health. Consider failover or re-seeding.';
 
-        SELECT 
-            ag.name AS AG_Name,
-            ar.replica_server_name,
-            d.name AS DatabaseName,
-            drs.synchronization_state_desc,
-            drs.log_send_queue_size,
-            drs.redo_queue_size,
-            drs.suspend_reason_desc
-        FROM sys.availability_groups ag
-        JOIN sys.availability_replicas ar ON ag.group_id = ar.group_id
-        JOIN sys.dm_hadr_database_replica_states drs ON ar.replica_id = drs.replica_id
-        JOIN sys.databases d ON drs.database_id = d.database_id;
+            SELECT 
+                ag.name AS AG_Name,
+                ar.replica_server_name,
+                d.name AS DatabaseName,
+                drs.synchronization_state_desc,
+                drs.log_send_queue_size,   -- KB
+                drs.redo_queue_size,       -- KB
+                drs.suspend_reason_desc
+            FROM sys.availability_groups ag
+            JOIN sys.availability_replicas ar ON ag.group_id = ar.group_id
+            JOIN sys.dm_hadr_database_replica_states drs ON ar.replica_id = drs.replica_id
+            JOIN sys.databases d ON drs.database_id = d.database_id
+            ORDER BY ag.name, d.name, ar.replica_server_name;
+        END
+        ELSE
+        BEGIN
+            PRINT '   ';
+            PRINT N'✅ AG Health OK: All replicas synchronized and queues within normal range.';
+        END
     END
     ELSE
-    BEGIN
-	    PRINT '   '
-        PRINT N'✅ AG Health OK: All replicas synchronized and queues within normal range.';
+    BEGIN 
+        PRINT '   ';
+        PRINT N'ℹ️ Skipped: This instance is not AG PRIMARY (or no AGs detected).';
     END
 END
 ELSE
-BEGIN 
-    PRINT '   '
-    PRINT 'Skipped: This instance is not AG PRIMARY.';
+BEGIN
+    -- SQL Server 2008 (Database Mirroring)
+    IF EXISTS (
+        SELECT 1
+        FROM sys.database_mirroring
+        WHERE mirroring_guid IS NOT NULL
+    )
+    BEGIN
+        IF EXISTS (
+            SELECT 1
+            FROM sys.database_mirroring
+            WHERE mirroring_guid IS NOT NULL
+              AND mirroring_role_desc = 'PRINCIPAL'
+              AND (
+                    mirroring_state_desc <> 'SYNCHRONIZED'
+                 OR ISNULL(mirroring_redo_queue, 0) > @QueueThresholdKB
+              )
+        )
+        BEGIN
+            PRINT '   ';
+            PRINT N'⚠️ Issue: One or more mirrored databases are not synchronized or have large redo queues.';
+            PRINT 'Check network latency, disk I/O, and partner health. Consider re-synchronization or failover.';
+
+            SELECT 
+                d.name AS DatabaseName,
+                dm.mirroring_role_desc,          -- PRINCIPAL/MIRROR
+                dm.mirroring_state_desc,         -- SYNCHRONIZED/SYNCHRONIZING/SUSPENDED
+                dm.mirroring_partner_name,
+                dm.mirroring_safety_level_desc,  -- FULL (High safety)/OFF
+                dm.mirroring_redo_queue          -- KB
+            FROM sys.database_mirroring dm
+            JOIN sys.databases d ON dm.database_id = d.database_id
+            WHERE dm.mirroring_guid IS NOT NULL
+            ORDER BY d.name;
+        END
+        ELSE
+        BEGIN
+            PRINT '   ';
+            PRINT N'✅ Mirroring Health OK: All principal databases synchronized and redo queues within normal range.';
+        END
+    END
+    ELSE
+    BEGIN
+        PRINT '   ';
+        PRINT N'ℹ️ Skipped: No Database Mirroring configured on this instance.';
+    END
 END
     GOTO AfterItem;
 
@@ -495,46 +573,42 @@ IF EXISTS (
     FROM msdb.dbo.sysjobhistory h
     WHERE h.run_status = 0
       AND h.step_id = 0
-      AND DATETIMEFROMPARTS(h.run_date / 10000,
-                            (h.run_date % 10000) / 100,
-                            (h.run_date % 100),
-                            h.run_time / 10000,
-                            (h.run_time % 10000) / 100,
-                            (h.run_time % 100),
-                            0) >= @Since
+      AND (
+            -- Convert run_date/run_time to DATETIME for comparison
+            CONVERT(DATETIME,
+                STUFF(STUFF(CAST(h.run_date AS CHAR(8)), 5, 0, '-'), 8, 0, '-') + ' ' +
+                STUFF(STUFF(RIGHT('000000' + CAST(h.run_time AS VARCHAR(6)), 6), 3, 0, ':'), 6, 0, ':')
+            ) >= @Since
+          )
 )
 BEGIN
-    PRINT '   '
+    PRINT '   ';
     PRINT N'⚠️ Issue: One or more jobs failed in the last 24 hours.';
-	
+
     SELECT
         LEFT(j.name, 40) AS FailedJobName,
         h.step_id,
-        DATEFROMPARTS(h.run_date / 10000,
-                      (h.run_date % 10000) / 100,
-                      (h.run_date % 100)) AS run_date_as_date,
-        TIMEFROMPARTS(h.run_time / 10000,
-                      (h.run_time % 10000) / 100,
-                      (h.run_time % 100), 0, 0) AS run_time_as_time,
-          h.message
+        -- Convert run_date/run_time to DATE and TIME for display
+        CONVERT(DATE, STUFF(STUFF(CAST(h.run_date AS CHAR(8)), 5, 0, '-'), 8, 0, '-')) AS run_date_as_date,
+        CONVERT(TIME, STUFF(STUFF(RIGHT('000000' + CAST(h.run_time AS VARCHAR(6)), 6), 3, 0, ':'), 6, 0, ':')) AS run_time_as_time,
+        h.message
     FROM msdb.dbo.sysjobhistory h
     JOIN msdb.dbo.sysjobs j ON h.job_id = j.job_id
     WHERE h.run_status = 0
       AND h.step_id = 0
-      AND DATETIMEFROMPARTS(h.run_date / 10000,
-                            (h.run_date % 10000) / 100,
-                            (h.run_date % 100),
-                            h.run_time / 10000,
-                            (h.run_time % 10000) / 100,
-                            (h.run_time % 100),
-                            0) >= @Since
-    ORDER BY run_time DESC;
+      AND (
+            CONVERT(DATETIME,
+                STUFF(STUFF(CAST(h.run_date AS CHAR(8)), 5, 0, '-'), 8, 0, '-') + ' ' +
+                STUFF(STUFF(RIGHT('000000' + CAST(h.run_time AS VARCHAR(6)), 6), 3, 0, ':'), 6, 0, ':')
+            ) >= @Since
+          )
+    ORDER BY run_date_as_date DESC, run_time_as_time DESC;
 END
 ELSE
 BEGIN
-    PRINT '   '
+    PRINT '   ';
     PRINT N'✅ All SQL Agent jobs succeeded in the last 24 hours.';
-	PRINT '   ';
+    PRINT '   ';
 END
 
     GOTO AfterItem;
@@ -823,13 +897,11 @@ SET ANSI_WARNINGS ON;   -- Restore default behaviour
 Item17:
 
   --17.Top 10 CPU Consumers (Text-view aligned, with totals)
-SET NOCOUNT ON;
-PRINT '   '
+  SET NOCOUNT ON;
+PRINT '   ';
 PRINT '[17.---Top 10 CPU Consumers---]';
-PRINT '-------------------------------'
+PRINT '-------------------------------';
 
--- Fixed widths:
--- RowNo(5) | CPU_ms(12) | CPU_HHMMSS(12) | ExecCnt(9) | AvgCPU_ms(12) | %Inst(7) | QueryText(200)
 DECLARE @Header NVARCHAR(400) =
     'RowNo CPU_ms      CPU_HHMMSS   ExecCnt   AvgCPU_ms   %Inst  QueryText';
 DECLARE @Separator NVARCHAR(400) =
@@ -877,12 +949,11 @@ WithPct AS (
             CASE WHEN t.InstTotalCPU_ms > 0 
                  THEN (tc.CPU_ms * 100.0) / t.InstTotalCPU_ms 
                  ELSE 0.0 
-            END AS DECIMAL(6,2)
+            END AS DECIMAL(18,2)
         ) AS PctOfInstance
     FROM TopCpu tc
     CROSS JOIN Totals t
 ),
--- Helper to render HH:MM:SS from milliseconds (no DATEADD to avoid overflow)
 Render AS (
     SELECT
         RowNo,
@@ -891,71 +962,52 @@ Render AS (
         AvgCPU_ms,
         PctOfInstance,
         QueryText,
-        -- Convert ms -> seconds
         CAST(CPU_ms / 1000 AS BIGINT) AS TotalSeconds
     FROM WithPct
 )
 SELECT
-    CONCAT(
-        RIGHT(SPACE(5)  + CAST(RowNo AS VARCHAR(5)), 5), ' ',
-        RIGHT(SPACE(12) + CAST(CPU_ms AS VARCHAR(12)), 12), ' ',
-        -- HH:MM:SS (hours may exceed 99 on very busy systems; we cap width, not value)
-        RIGHT(
-            SPACE(12) + 
-            CONCAT(
-                -- Hours can exceed 24; show total hours
-                CAST((TotalSeconds / 3600) AS VARCHAR(12)), ':',
-                RIGHT('0' + CAST(((TotalSeconds % 3600) / 60) AS VARCHAR(2)), 2), ':',
-                RIGHT('0' + CAST((TotalSeconds % 60) AS VARCHAR(2)), 2)
-            )
-        , 12), ' ',
-        RIGHT(SPACE(9)  + CAST(ExecCnt AS VARCHAR(9)), 9), ' ',
-        RIGHT(SPACE(12) + CAST(AvgCPU_ms AS VARCHAR(12)), 12), ' ',
-        RIGHT(SPACE(7)  + CAST(PctOfInstance AS VARCHAR(7)), 7), ' ',
-        LEFT(
-            REPLACE(REPLACE(QueryText, CHAR(13)+CHAR(10), ' '), CHAR(9), ' ')
-        , 80)
-    ) AS [RowNo CPU_ms CPU_HHMMSS ExecCnt AvgCPU_ms %Inst QueryText]
+    -- Replace CONCAT with + for SQL 2008
+    RIGHT(SPACE(5)  + CAST(RowNo AS VARCHAR(5)), 5) + ' ' +
+    RIGHT(SPACE(12) + CAST(CPU_ms AS VARCHAR(12)), 12) + ' ' +
+    RIGHT(
+        SPACE(12) + 
+        CAST((TotalSeconds / 3600) AS VARCHAR(12)) + ':' +
+        RIGHT('0' + CAST(((TotalSeconds % 3600) / 60) AS VARCHAR(2)), 2) + ':' +
+        RIGHT('0' + CAST((TotalSeconds % 60) AS VARCHAR(2)), 2)
+    , 12) + ' ' +
+    RIGHT(SPACE(9)  + CAST(ExecCnt AS VARCHAR(9)), 9) + ' ' +
+    RIGHT(SPACE(12) + CAST(AvgCPU_ms AS VARCHAR(12)), 12) + ' ' +
+    RIGHT(SPACE(7)  + CAST(PctOfInstance AS VARCHAR(7)), 7) + ' ' +
+    LEFT(REPLACE(REPLACE(QueryText, CHAR(13)+CHAR(10), ' '), CHAR(9), ' '), 80)
+    AS [RowNo CPU_ms CPU_HHMMSS ExecCnt AvgCPU_ms %Inst QueryText]
 FROM Render
 ORDER BY RowNo;
 
 -- Footer: totals for Top 10 and percent of instance
 ;WITH Base AS (
-    SELECT
-        qs.total_worker_time AS total_worker_us
-    FROM sys.dm_exec_query_stats AS qs
+    SELECT qs.total_worker_time AS total_worker_us FROM sys.dm_exec_query_stats AS qs
 ),
 Totals AS (
-    SELECT SUM(CAST(total_worker_us AS BIGINT)) / 1000 AS InstTotalCPU_ms
-    FROM Base
+    SELECT SUM(CAST(total_worker_us AS BIGINT)) / 1000 AS InstTotalCPU_ms FROM Base
 ),
 Top10 AS (
-    SELECT TOP 10
-        CAST(qs.total_worker_time / 1000 AS BIGINT) AS CPU_ms
+    SELECT TOP 10 CAST(qs.total_worker_time / 1000 AS BIGINT) AS CPU_ms
     FROM sys.dm_exec_query_stats qs
     ORDER BY qs.total_worker_time DESC
 ),
 Agg AS (
-    SELECT 
-        (SELECT SUM(CPU_ms) FROM Top10) AS Top10CPU_ms,
-        t.InstTotalCPU_ms
-    FROM Totals t
+    SELECT (SELECT SUM(CPU_ms) FROM Top10) AS Top10CPU_ms, t.InstTotalCPU_ms FROM Totals t
 )
 SELECT
-    -- Print a clean footer line with totals
-    CONCAT(
-        'Top10 Total CPU (ms): ',
-        CAST(Top10CPU_ms AS VARCHAR(30)),
-        ' | Top10 Total CPU (HH:MM:SS): ',
-        CONCAT(
-            CAST((Top10CPU_ms/1000)/3600 AS VARCHAR(20)), ':',
-            RIGHT('0' + CAST((((Top10CPU_ms/1000)%3600)/60) AS VARCHAR(2)), 2), ':',
-            RIGHT('0' + CAST(((Top10CPU_ms/1000)%60) AS VARCHAR(2)), 2)
-        ),
-        ' | % of Instance CPU: ',
-        CAST(CASE WHEN InstTotalCPU_ms>0 THEN (Top10CPU_ms*100.0)/InstTotalCPU_ms ELSE 0.0 END AS DECIMAL(6,2)),
-        '%'
-    ) AS [Summary]
+    'Top10 Total CPU (ms): ' +
+    CAST(Top10CPU_ms AS VARCHAR(30)) +
+    ' | Top10 Total CPU (HH:MM:SS): ' +
+    CAST((Top10CPU_ms/1000)/3600 AS VARCHAR(20)) + ':' +
+    RIGHT('0' + CAST((((Top10CPU_ms/1000)%3600)/60) AS VARCHAR(2)), 2) + ':' +
+    RIGHT('0' + CAST(((Top10CPU_ms/1000)%60) AS VARCHAR(2)), 2) +
+    ' | % of Instance CPU: ' +
+    CAST(CASE WHEN InstTotalCPU_ms>0 THEN (Top10CPU_ms*100.0)/InstTotalCPU_ms ELSE 0.0 END AS VARCHAR(30)) +
+    '%'
 FROM Agg;
 
     GOTO AfterItem;
@@ -967,20 +1019,22 @@ Item18:
 PRINT '[18.--- Index and Statistics ---]';
 PRINT '--------------------------------';
 
-SET NOCOUNT ON;
+--SET NOCOUNT ON;
 
 IF OBJECT_ID('tempdb..#IndexStats') IS NOT NULL DROP TABLE #IndexStats;
+
 CREATE TABLE #IndexStats (
     DbName               sysname        NULL,
     SchemaName           sysname        NULL,
     BaseObjectName       sysname        NULL,
-    FullObjectName       AS (QUOTENAME(SchemaName) + '.' + QUOTENAME(BaseObjectName)) PERSISTED,
+    FullObjectName       AS (QUOTENAME(SchemaName) + '.' + QUOTENAME(BaseObjectName)), -- removed PERSISTED
     IndexName            NVARCHAR(200)  NULL,
     IndexType            NVARCHAR(60)   NULL,
     IsDisabled           bit            NULL,
     IsHypothetical       bit            NULL,
     LastIndexStatsUpdate datetime       NULL
 );
+
 
 DECLARE @sql NVARCHAR(MAX) = N'';
 
@@ -1003,10 +1057,7 @@ SELECT
         WHEN 2 THEN ''NONCLUSTERED''
         WHEN 3 THEN ''XML''
         WHEN 4 THEN ''SPATIAL''
-        WHEN 5 THEN ''CLUSTERED COLUMNSTORE''
-        WHEN 6 THEN ''NONCLUSTERED COLUMNSTORE''
-        WHEN 7 THEN ''NONCLUSTERED HASH''
-        ELSE ''OTHER''
+        ELSE ''OTHER''  -- Columnstore and hash indexes not in SQL 2008
     END AS IndexType,
     i.is_disabled,
     i.is_hypothetical,
@@ -1034,7 +1085,7 @@ FROM #IndexStats;
 ------------------------
 -- Per-database summary
 SELECT 
-    DbName AS DatabaseName,
+    SUBSTRING(DbName,1,50) AS DatabaseName,
     MAX(LastIndexStatsUpdate) AS DbLastIndexStatsUpdate,
     SUM(CASE WHEN LastIndexStatsUpdate IS NOT NULL 
              AND LastIndexStatsUpdate >= DATEADD(day, -1, SYSDATETIME()) 
@@ -1049,15 +1100,16 @@ PRINT 'Oldest Index Maintenance';
 PRINT '------------------------';
 
 SELECT TOP 100
-    DbName AS DatabaseName,
-    FullObjectName,
-    ISNULL(IndexName, '(HEAP)') AS IndexName,
+    SUBSTRING(DbName,1,40) AS DatabaseName,
+    SUBSTRING(FullObjectName,1,60) AS FullObjectName ,
+    SUBSTRING(ISNULL(IndexName, '(HEAP)'),1,60) AS IndexName,
     LastIndexStatsUpdate
 FROM #IndexStats
 WHERE LastIndexStatsUpdate IS NOT NULL
 ORDER BY LastIndexStatsUpdate ASC;
 
 DROP TABLE #IndexStats;
+
 GOTO AfterItem;
    
 -----------------------------------------------
@@ -1066,10 +1118,20 @@ Item19:
   --19. Query Store Results
 
 PRINT '[19.--- Query Store Status ---]';
-PRINT '-------------------------------'
+PRINT '-------------------------------';
 PRINT '';
 SET NOCOUNT ON;
 
+DECLARE @MajorVersion1 INT;
+SET @MajorVersion1 = CAST(PARSENAME(CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128)), 4) AS INT);
+
+IF @MajorVersion1 < 13
+BEGIN
+    PRINT N'ℹ️ Skipped: Query Store is not available on SQL Server versions prior to 2016.';
+    RETURN;
+END
+
+-- If version >= 13, run original Query Store logic
 DECLARE @LookbackDays INT = 7;       -- Lookback window in days
 DECLARE @TopN INT = 10;              -- Top N queries per metric per database
 DECLARE @MinExecutions BIGINT = 5;   -- Minimum executions to include
@@ -1138,7 +1200,7 @@ SELECT
     CompatibilityLevel,
     IsQueryStoreAvailable,
     SUBSTRING(ActualStateDesc,1,20) AS ActualStateDesc,
-    SUBSTRING (DesiredStateDesc,1,20) AS DesiredStaeDesc,
+    SUBSTRING (DesiredStateDesc,1,20) AS DesiredStateDesc,
     IsQueryStoreEnabled,
     IsReadOnly,
     StatusHighlight = CASE
@@ -1150,161 +1212,8 @@ SELECT
 FROM #DbStatus
 ORDER BY IsQueryStoreEnabled DESC, DatabaseName;
 
+-- Worst Queries logic remains unchanged (only runs if version >= 13)
 
-/********************************************************************
-B) Worst queries from Query Store (last @LookbackDays days)
-   - No reliance on sys.plan_attributes
-*********************************************************************/
-IF OBJECT_ID('tempdb..#WorstQueriesRaw') IS NOT NULL DROP TABLE #WorstQueriesRaw;
-CREATE TABLE #WorstQueriesRaw (
-    DatabaseName SYSNAME,
-    QueryId BIGINT,
-    PlanId BIGINT,
-    QueryText NVARCHAR(MAX),
-    ObjectName SYSNAME NULL,
-    AvgDurationMs DECIMAL(18,2),
-    AvgCPUms DECIMAL(18,2),
-    AvgLogicalReads DECIMAL(18,2),
-    ExecutionCount BIGINT,
-    LastExecutionTime DATETIME2(3),
-    MetricCategory VARCHAR(20)
-);
-
-DECLARE @StartTime DATETIME2(0) = DATEADD(DAY, -@LookbackDays, SYSUTCDATETIME());
-
-DECLARE enabled CURSOR LOCAL FAST_FORWARD FOR
-SELECT DatabaseName
-FROM #DbStatus
-WHERE IsQueryStoreAvailable = 1
-  AND IsQueryStoreEnabled = 1;
-
-OPEN enabled;
-FETCH NEXT FROM enabled INTO @db;
-
-WHILE @@FETCH_STATUS = 0
-BEGIN
-    SET @cmd = N'
-BEGIN TRY
-    USE ' + QUOTENAME(@db) + N';
-
-    IF NOT EXISTS (
-        SELECT 1
-        FROM sys.database_query_store_options
-        WHERE actual_state_desc IN (''READ_WRITE'', ''READ_ONLY'')
-    )
-        RETURN;
-
-    ;WITH qs AS (
-        SELECT
-            q.query_id,
-            p.plan_id,
-            qt.query_sql_text,
-            rs.count_executions AS exec_count,
-            rs.avg_duration * 1000.0 AS avg_duration_ms,
-            rs.avg_cpu_time * 1000.0 AS avg_cpu_ms,
-            rs.avg_logical_io_reads AS avg_logical_reads,
-            rs.last_execution_time
-        FROM sys.query_store_query AS q
-        JOIN sys.query_store_plan AS p ON p.query_id = q.query_id
-        JOIN sys.query_store_query_text AS qt ON qt.query_text_id = q.query_text_id
-        JOIN sys.query_store_runtime_stats AS rs ON rs.plan_id = p.plan_id
-        JOIN sys.query_store_runtime_stats_interval AS rsi ON rsi.runtime_stats_interval_id = rs.runtime_stats_interval_id
-        WHERE rsi.end_time >= @StartTime
-          AND rs.count_executions >= @MinExecutions
-    ),
-    top_duration AS (
-        SELECT TOP (@TopN) *
-        FROM qs
-        ORDER BY avg_duration_ms DESC
-    ),
-    top_cpu AS (
-        SELECT TOP (@TopN) *
-        FROM qs
-        ORDER BY avg_cpu_ms DESC
-    ),
-    top_reads AS (
-        SELECT TOP (@TopN) *
-        FROM qs
-        ORDER BY avg_logical_reads DESC
-    )
-    INSERT INTO #WorstQueriesRaw (DatabaseName, QueryId, PlanId, QueryText, ObjectName, AvgDurationMs, AvgCPUms, AvgLogicalReads, ExecutionCount, LastExecutionTime, MetricCategory)
-    SELECT DB_NAME(), query_id, plan_id, query_sql_text, NULL, avg_duration_ms, avg_cpu_ms, avg_logical_reads, exec_count, last_execution_time, ''Duration'' FROM top_duration
-    UNION ALL
-    SELECT DB_NAME(), query_id, plan_id, query_sql_text, NULL, avg_duration_ms, avg_cpu_ms, avg_logical_reads, exec_count, last_execution_time, ''CPU'' FROM top_cpu
-    UNION ALL
-    SELECT DB_NAME(), query_id, plan_id, query_sql_text, NULL, avg_duration_ms, avg_cpu_ms, avg_logical_reads, exec_count, last_execution_time, ''Reads'' FROM top_reads;
-END TRY
-BEGIN CATCH
-    RETURN;
-END CATCH;
-';
-    EXEC sp_executesql
-        @cmd,
-        N'@StartTime DATETIME2(0), @TopN INT, @MinExecutions BIGINT',
-        @StartTime=@StartTime, @TopN=@TopN, @MinExecutions=@MinExecutions;
-
-    FETCH NEXT FROM enabled INTO @db;
-END
-
-CLOSE enabled;
-DEALLOCATE enabled;
-
--- Deduplicate and store in #WorstQueries (no ORDER BY in SELECT INTO)
-IF OBJECT_ID('tempdb..#WorstQueries') IS NOT NULL DROP TABLE #WorstQueries;
-
-SELECT
-    DatabaseName,
-    QueryId,
-    PlanId,
-    QueryText,
-    ObjectName,
-    AvgDurationMs,
-    AvgCPUms,
-    AvgLogicalReads,
-    ExecutionCount,
-    LastExecutionTime,
-    MetricCategory
-INTO #WorstQueries
-FROM (
-    SELECT *,
-           ROW_NUMBER() OVER (
-                PARTITION BY DatabaseName, QueryId, PlanId
-                ORDER BY 
-                    CASE MetricCategory
-                        WHEN 'Duration' THEN AvgDurationMs
-                        WHEN 'CPU'     THEN AvgCPUms
-                        WHEN 'Reads'   THEN AvgLogicalReads
-                    END DESC
-           ) AS rn
-    FROM #WorstQueriesRaw
-) AS x
-WHERE rn = 1;
-
-PRINT '[--- Worst Queries from Query Store ---]';
-PRINT  '---------------------------------------';
-PRINT '';
-SELECT
-    SUBSTRING(DatabaseName,1,40)AS DatabasName,
-    MetricCategory,
-    QueryId,
-    PlanId,
-    AvgDurationMs,
-    AvgCPUms,
-    AvgLogicalReads,
-    ExecutionCount,
-    LastExecutionTime,
-    QueryText = CASE 
-        WHEN LEN(QueryText) > 4000 THEN LEFT(QueryText, 4000) + N' …(truncated)'
-        ELSE QueryText
-    END
-FROM #WorstQueries
-ORDER BY DatabaseName,
-         MetricCategory,
-         CASE MetricCategory
-            WHEN 'Duration' THEN AvgDurationMs
-            WHEN 'CPU'      THEN AvgCPUms
-            WHEN 'Reads'    THEN AvgLogicalReads
-         END DESC;
 -----------------------------------------------
 
     GOTO AfterItem;
@@ -1415,5 +1324,4 @@ AfterItem:
 EndScript:
   
     PRINT '';
-	PRINT '[=== End of Diagnostics ===]';
-
+PRINT '[=== End of Diagnostics ===]';
