@@ -1,0 +1,138 @@
+---CHOICE TEMPLATE Adrian Sleigh 04/12/25
+--Script allows a choice of sections or all sections
+--------------------------------------------------
+DECLARE @SelectedItems NVARCHAR(MAX) = 'ALL';  -- <-- set to 'ALL' or e.g. '1,3,7,20'
+
+DECLARE @Work NVARCHAR(MAX);
+DECLARE @CurrentItem INT;
+DECLARE @pos INT;
+DECLARE @token NVARCHAR(20);
+DECLARE @sep NCHAR(1) = ',';
+
+-- Expand ALL into 1..4 once
+IF UPPER(LTRIM(RTRIM(@SelectedItems))) = 'ALL'
+BEGIN
+    SET @SelectedItems = '1,2,3,4';
+END
+
+-- Optional: normalize spaces
+SET @SelectedItems = REPLACE(@SelectedItems, ' ', '');
+
+-- Optional: remove duplicated selections by loading into a table
+IF OBJECT_ID('tempdb..#Sel') IS NOT NULL DROP TABLE #Sel;
+CREATE TABLE #Sel (ItemID INT PRIMARY KEY);
+
+-- Tokenize @SelectedItems and insert distinct ints to #Sel
+SET @Work = @SelectedItems;
+
+Tokenize:
+    IF @Work IS NULL OR @Work = '' GOTO TokenizeDone;
+
+    SET @pos = CHARINDEX(@sep, @Work);
+    IF @pos > 0
+        SET @token = SUBSTRING(@Work, 1, @pos - 1);
+    ELSE
+        SET @token = @Work;
+
+    IF TRY_CONVERT(INT, @token) IS NOT NULL
+    BEGIN
+        SET @CurrentItem = CONVERT(INT, @token);
+        IF @CurrentItem BETWEEN 1 AND 4
+        BEGIN
+            -- Insert distinct; ignore duplicates
+            IF NOT EXISTS (SELECT 1 FROM #Sel WHERE ItemID = @CurrentItem)
+                INSERT INTO #Sel (ItemID) VALUES (@CurrentItem);
+        END
+        ELSE
+        BEGIN
+            PRINT CONCAT('Skipping out-of-range selection (1-4): ', @CurrentItem);
+        END
+    END
+    ELSE
+    BEGIN
+        PRINT CONCAT('Skipping invalid selection: "', @token, '"');
+    END
+
+    IF @pos > 0
+        SET @Work = SUBSTRING(@Work, @pos + 1, LEN(@Work));
+    ELSE
+        SET @Work = NULL;
+
+    GOTO Tokenize;
+
+TokenizeDone:
+    -- Cursor-free loop across selected items in ascending order
+    DECLARE @NextItem INT;
+
+GetNext:
+    SELECT TOP (1) @NextItem = ItemID
+    FROM #Sel
+    ORDER BY ItemID;  -- Change to desired order
+
+    IF @NextItem IS NULL GOTO EndScript;
+
+    -- Route to specific item block
+    IF @NextItem = 1  GOTO Item1;
+    IF @NextItem = 2  GOTO Item2;
+    IF @NextItem = 3  GOTO Item3;
+   
+	IF @NextItem = 4 GOTO Item4;   
+
+    -- Should never reach here
+    PRINT CONCAT('No handler for item: ', @NextItem);
+    GOTO AfterItem;
+
+--------------------------
+-- Item blocks (put your code in each and end by removing @NextItem and GOTO GetNext)
+--------------------------
+
+Item1:
+
+PRINT'Item1'
+  ---code here
+    select @@version ;
+  ---end code
+
+GOTO AfterItem;
+
+Item2:
+ 
+PRINT'Item2'
+  ---code here
+select @@version ;
+  ---end code
+
+GOTO AfterItem;
+
+Item3:
+ 
+PRINT'Item3'
+  ---code here
+select @@version ;
+  ---end code
+
+GOTO AfterItem;
+
+Item4:
+
+PRINT'Item4'
+  ---code here
+select @@version ;
+  ---end code
+
+GOTO AfterItem;
+
+
+--------------------------
+-- Return to driver to fetch next item
+--------------------------
+AfterItem:
+    -- Remove the processed item so the next one can be fetched
+    DELETE FROM #Sel WHERE ItemID = @NextItem;
+    SET @NextItem = NULL;
+    GOTO GetNext;
+
+EndScript:
+  
+    PRINT '';
+PRINT '[=== End of Diagnostics ===]';
