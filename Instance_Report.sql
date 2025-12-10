@@ -2,8 +2,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 03/12/25
---Version 31.0 Added SQL 2025 version check
+--Written By Adrian Sleigh 10/12/25
+--Version 32.0 Added SQL 2016 out of order bersion check fixed
 ---------------------------------------------------------------------------
 PRINT N'📊 Generating Report...';
 SELECT
@@ -55,8 +55,40 @@ BEGIN
 END
 ELSE IF @MajorVersion = 13
 BEGIN
-    SET @VersionName   = N'SQL Server 2016';
-    SET @LatestVersion = N'13.0.7060.1'; -- SQL Server 2016 SP3
+    -----OUT OF SYNC VERSION CHECK 10/12/25
+    -- Branch/Track-aware handling for SQL Server 2016 (13.x)
+    -- This prevents misclassification when Microsoft ships a later-dated
+    -- GDR on SP2 with a lower build number than SP3 (e.g., 13.0.6475.1).
+    -----------------------------------------------------------------------
+    DECLARE @ProductLevel       sysname = CONVERT(sysname, SERVERPROPERTY('ProductLevel'));         -- RTM/SP1/SP2/SP3
+    DECLARE @ProductUpdateLevel sysname = CONVERT(sysname, SERVERPROPERTY('ProductUpdateLevel'));   -- CUxx or GDRxx (NULL if none)
+
+    DECLARE @SP tinyint = CASE WHEN @ProductLevel = 'RTM' THEN 0
+                               ELSE TRY_CONVERT(tinyint, REPLACE(@ProductLevel,'SP','')) END;
+    DECLARE @Track varchar(3) = CASE WHEN @ProductUpdateLevel LIKE 'CU%' THEN 'CU' ELSE 'GDR' END;
+
+    -- Friendly name reflects actual branch & update train
+    SET @VersionName =
+        N'SQL Server 2016' +
+        CASE WHEN @SP > 0 THEN CONCAT(' SP', @SP) ELSE N'' END +
+        CASE WHEN @ProductUpdateLevel IS NULL THEN N'' ELSE CONCAT(' ', @ProductUpdateLevel) END;
+
+    -- Baselines per branch/track (update these when Microsoft ships new fixes)
+    IF @SP = 3 AND @Track = 'GDR'
+        SET @LatestVersion = N'13.0.7070.1';   -- SQL Server 2016 SP3 GDR
+    ELSE IF @SP = 2 AND @Track = 'GDR'
+        SET @LatestVersion = N'13.0.6475.1';   -- SQL Server 2016 SP2 GDR (Nov release)
+    ELSE IF @SP = 3 AND @Track = 'CU'
+        -- If you maintain CU baselines, put the current SP3 CU here; else default to SP3 GDR
+        SET @LatestVersion = N'13.0.7070.1';   -- defaulting to SP3 GDR baseline
+        -- Example: SET @LatestVersion = N'13.0.78xx.x'; -- SP3 CUx
+    ELSE IF @SP = 2 AND @Track = 'CU'
+        -- If you maintain CU baselines, put the current SP2 CU here; else default to SP2 GDR
+        SET @LatestVersion = N'13.0.6475.1';   -- defaulting to SP2 GDR baseline
+        -- Example: SET @LatestVersion = N'13.0.65xx.x'; -- SP2 CUx
+    ELSE
+        -- Fallback: prefer highest serviced GDR you allow (keeps policy simple)
+        SET @LatestVersion = N'13.0.7060.1';   -- safe default (SP3 GDR)
 END
 ELSE IF @MajorVersion = 12
 BEGIN
@@ -105,7 +137,7 @@ DECLARE @BranchOutdated BIT =
 -- Output base info
 PRINT N'Detected Version: ' + @VersionName;
 PRINT N'Current SQL Server Version: ' + @CurrentVersion;
-PRINT N'Latest Known Version (Aug 2025) for this branch: ' + @LatestVersion;
+PRINT N'Latest Known Version (Dec 2025) for this branch: ' + @LatestVersion;
 
 -- ============================================
 -- Enforce baseline: SQL Server 2019 required
@@ -2945,7 +2977,6 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
-
 
 
 
