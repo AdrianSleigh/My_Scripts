@@ -1,0 +1,142 @@
+--QUERY STORE QUERIES
+---------------------
+-- Are we capturing? What's the storage status?
+SELECT actual_state_desc,
+       desired_state_desc,
+       current_storage_size_mb,
+       max_storage_size_mb,
+       query_capture_mode_desc,
+       interval_length_minutes
+FROM sys.database_query_store_options;
+
+-- How recent is data? Show latest intervals captured
+SELECT TOP (20)
+       start_time, end_time
+FROM sys.query_store_runtime_stats_interval
+ORDER BY start_time DESC;
+-------------------------------------------------------
+
+--Top resource consuming queries
+DECLARE @StartTime DATETIME2 = DATEADD(day, -7, SYSUTCDATETIME()); -- last 7 days
+DECLARE @EndTime   DATETIME2 = SYSUTCDATETIME();
+DECLARE @TopN      INT = 20;
+
+-- Top by average duration
+WITH rs AS (
+    SELECT rs.plan_id, rs.avg_duration, rs.avg_cpu_time, rs.avg_logical_io_reads,
+           rsi.start_time, rsi.end_time
+    FROM sys.query_store_runtime_stats rs
+    JOIN sys.query_store_runtime_stats_interval rsi
+      ON rs.runtime_stats_interval_id = rsi.runtime_stats_interval_id
+    WHERE rsi.start_time >= @StartTime
+      AND rsi.end_time   <= @EndTime
+),
+agg AS (
+    SELECT p.query_id,
+           COUNT(*)                       AS intervals,
+           SUM(rs.avg_duration)           AS sum_avg_duration_ms,
+           SUM(rs.avg_cpu_time)           AS sum_avg_cpu_ms,
+           SUM(rs.avg_logical_io_reads)   AS sum_avg_reads,
+           MIN(rs.start_time)             AS first_seen,
+           MAX(rs.end_time)               AS last_seen
+    FROM rs
+    JOIN sys.query_store_plan p ON rs.plan_id = p.plan_id
+    GROUP BY p.query_id
+)
+SELECT TOP (@TopN)
+       q.query_id,
+       qt.query_sql_text,
+       agg.sum_avg_duration_ms AS total_avg_duration_ms,
+       agg.sum_avg_cpu_ms      AS total_avg_cpu_ms,
+       agg.sum_avg_reads       AS total_avg_reads,
+       agg.intervals,
+       agg.first_seen,
+       agg.last_seen
+FROM agg
+JOIN sys.query_store_query q      ON agg.query_id = q.query_id
+JOIN sys.query_store_query_text qt ON q.query_text_id = qt.query_text_id
+ORDER BY agg.sum_avg_duration_ms DESC;  -- switch to cpu/read sorts if needed
+
+----------------------------------------------------------------------
+--Regressed queries before vs after
+
+DECLARE @BeforeStart DATETIME2 = DATEADD(day, -14, SYSUTCDATETIME()); -- older window start
+DECLARE @BeforeEnd   DATETIME2 = DATEADD(day, -7,  SYSUTCDATETIME()); -- older window end
+DECLARE @AfterStart  DATETIME2 = DATEADD(day, -7,  SYSUTCDATETIME()); -- recent window start
+DECLARE @AfterEnd    DATETIME2 = SYSUTCDATETIME();                    -- recent window end
+DECLARE @MinExecs    INT = 5;  -- minimum intervals to qualify
+DECLARE @TopN        INT = 20;
+
+WITH rs AS (
+    SELECT rs.plan_id, rs.avg_duration, rs.count_executions,
+           rsi.start_time, rsi.end_time
+    FROM sys.query_store_runtime_stats rs
+    JOIN sys.query_store_runtime_stats_interval rsi
+      ON rs.runtime_stats_interval_id = rsi.runtime_stats_interval_id
+),
+before AS (
+    SELECT p.query_id,
+           AVG(rs.avg_duration)                AS before_avg_duration_ms,
+           SUM(rs.count_executions)            AS before_exec_count
+    FROM rs
+    JOIN sys.query_store_plan p ON rs.plan_id = p.plan_id
+    WHERE rs.start_time >= @BeforeStart AND rs.end_time <= @BeforeEnd
+    GROUP BY p.query_id
+),
+after AS (
+    SELECT p.query_id,
+           AVG(rs.avg_duration)                AS after_avg_duration_ms,
+           SUM(rs.count_executions)            AS after_exec_count
+    FROM rs
+    JOIN sys.query_store_plan p ON rs.plan_id = p.plan_id
+    WHERE rs.start_time >= @AfterStart AND rs.end_time <= @AfterEnd
+    GROUP BY p.query_id
+),
+joined AS (
+    SELECT a.query_id,
+           b.before_avg_duration_ms,
+           b.before_exec_count,
+           a.after_avg_duration_ms,
+           a.after_exec_count,
+           (a.after_avg_duration_ms - b.before_avg_duration_ms)        AS delta_ms,
+           CASE WHEN b.before_avg_duration_ms > 0
+                THEN (a.after_avg_duration_ms / b.before_avg_duration_ms)
+                ELSE NULL END                                          AS ratio
+    FROM after a
+    JOIN before b ON a.query_id = b.query_id
+)
+SELECT TOP (@TopN)
+       j.query_id,
+       qt.query_sql_text,
+       j.before_avg_duration_ms,
+       j.after_avg_duration_ms,
+       j.delta_ms,
+       j.ratio,
+       j.before_exec_count,
+       j.after_exec_count
+FROM joined j
+JOIN sys.query_store_query q       ON j.query_id = q.query_id
+JOIN sys.query_store_query_text qt ON q.query_text_id = qt.query_text_id
+WHERE j.before_exec_count >= @MinExecs
+  AND j.after_exec_count  >= @MinExecs
+  AND j.after_avg_duration_ms > j.before_avg_duration_ms  -- only regressions
+ORDER BY j.ratio DESC, j.delta_ms DESC;
+--------------------------------------------------------
+--Overall Resource Consumption
+
+DECLARE @StartTime DATETIME2 = DATEADD(day, -7, SYSUTCDATETIME());
+DECLARE @EndTime   DATETIME2 = SYSUTCDATETIME();
+
+SELECT
+    rsi.start_time,
+    rsi.end_time,
+    SUM(rs.avg_duration * rs.count_executions)      AS total_duration_ms,
+    SUM(rs.avg_cpu_time * rs.count_executions)      AS total_cpu_ms,
+    SUM(rs.avg_logical_io_reads * rs.count_executions) AS total_reads
+FROM sys.query_store_runtime_stats rs
+JOIN sys.query_store_runtime_stats_interval rsi
+  ON rs.runtime_stats_interval_id = rsi.runtime_stats_interval_id
+WHERE rsi.start_time >= @StartTime
+  AND rsi.end_time   <= @EndTime
+GROUP BY rsi.start_time, rsi.end_time
+ORDER BY rsi.start_time;
