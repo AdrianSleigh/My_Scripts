@@ -1,0 +1,190 @@
+/* ============================================================
+   1) Identify active requests and their waits
+   ============================================================ */
+SELECT
+    r.session_id,
+    r.status,
+    r.command,
+    r.blocking_session_id,
+    r.wait_type,
+    r.wait_time,
+    r.wait_resource,
+    DB_NAME(r.database_id) AS database_name,
+    r.cpu_time,
+    r.total_elapsed_time,
+    t.text AS sql_text,
+    qp.query_plan
+FROM sys.dm_exec_requests AS r
+CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
+OUTER APPLY sys.dm_exec_query_plan(r.plan_handle) AS qp
+WHERE r.database_id = DB_ID('<YourDatabaseName>')
+  AND (t.text LIKE '%<YourTableName>%' OR r.session_id = <SessionID>);
+
+/* ============================================================
+   2) Blocking chain
+   ============================================================ */
+WITH waiting AS (
+    SELECT
+        r.session_id,
+        r.blocking_session_id,
+        r.wait_type,
+        r.wait_time,
+        t.text AS sql_text
+    FROM sys.dm_exec_requests r
+    CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t
+    WHERE r.blocking_session_id <> 0
+)
+SELECT
+    w.session_id AS waiter_sid,
+    w.blocking_session_id AS blocker_sid,
+    w.wait_type,
+    w.wait_time,
+    w.sql_text AS waiter_text
+FROM waiting w
+ORDER BY w.wait_time DESC;
+
+/* ============================================================
+   3) Locks on a specific table
+   ============================================================ */
+SELECT
+    tl.resource_type,
+    tl.resource_description,
+    tl.request_mode,
+    tl.request_status,
+    tl.request_session_id,
+    OBJECT_NAME(p.object_id) AS object_name
+FROM sys.dm_tran_locks tl
+LEFT JOIN sys.partitions p
+    ON tl.resource_associated_entity_id = p.hobt_id
+WHERE OBJECT_NAME(p.object_id) = '<YourTableName>'
+ORDER BY tl.request_status, tl.request_mode;
+
+/* ============================================================
+   4) Cached plans and runtime stats
+   ============================================================ */
+SELECT TOP (20)
+    qs.plan_handle,
+    qs.sql_handle,
+    DB_NAME(qp.dbid) AS database_name,
+    t.text AS sql_text,
+    qs.execution_count,
+    qs.total_elapsed_time / NULLIF(qs.execution_count,0) AS avg_elapsed_ms,
+    qs.total_logical_reads / NULLIF(qs.execution_count,0) AS avg_logical_reads,
+    qs.total_worker_time / NULLIF(qs.execution_count,0) AS avg_cpu_ms,
+    qs.max_grant_kb,
+    qp.query_plan
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t
+CROSS APPLY sys.dm_exec_text_query_plan(qs.plan_handle, DEFAULT, DEFAULT) qp
+WHERE t.text LIKE '%<YourTableName>%'
+ORDER BY avg_elapsed_ms DESC;
+
+/* ============================================================
+   5) Parameter sniffing check
+   ============================================================ */
+SELECT
+    qp.query_plan,
+    t.text
+FROM sys.dm_exec_cached_plans cp
+CROSS APPLY sys.dm_exec_text_query_plan(cp.plan_handle, DEFAULT, DEFAULT) qp
+CROSS APPLY sys.dm_exec_sql_text(cp.plan_handle) t
+WHERE t.text LIKE '%<ProcOrQueryName>%';
+
+/* ============================================================
+   6) Statistics freshness
+   ============================================================ */
+SELECT
+    s.name AS stat_name,
+    c.name AS column_name,
+    sp.last_updated,
+    sp.rows,
+    sp.rows_sampled,
+    sp.modification_counter
+FROM sys.stats s
+JOIN sys.stats_columns sc ON s.object_id = sc.object_id AND s.stats_id = sc.stats_id
+JOIN sys.columns c ON sc.object_id = c.object_id AND sc.column_id = c.column_id
+CROSS APPLY sys.dm_db_stats_properties(s.object_id, s.stats_id) sp
+WHERE s.object_id = OBJECT_ID('<YourTableName>')
+ORDER BY sp.last_updated;
+
+/* ============================================================
+   7) Index fragmentation
+   ============================================================ */
+SELECT
+    i.name,
+    ips.index_type_desc,
+    ips.avg_fragmentation_in_percent,
+    ips.page_count
+FROM sys.dm_db_index_physical_stats(DB_ID('<YourDatabaseName>'), OBJECT_ID('<YourTableName>'), NULL, NULL, 'LIMITED') ips
+JOIN sys.indexes i ON ips.object_id = i.object_id AND ips.index_id = i.index_id
+ORDER BY ips.avg_fragmentation_in_percent DESC;
+
+/* ============================================================
+   8) Missing index suggestions
+   ============================================================ */
+SELECT TOP (10)
+    migs.avg_user_impact,
+    mid.statement AS table_name,
+    mid.equality_columns,
+    mid.inequality_columns,
+    mid.included_columns
+FROM sys.dm_db_missing_index_group_stats migs
+JOIN sys.dm_db_missing_index_groups mig ON migs.group_handle = mig.index_group_handle
+JOIN sys.dm_db_missing_index_details mid ON mig.index_handle = mid.index_handle
+WHERE mid.database_id = DB_ID('<YourDatabaseName>')
+  AND mid.statement LIKE '%<YourTableName>%'
+ORDER BY migs.avg_user_impact DESC;
+
+/* ============================================================
+   9) Server-wide waits
+   ============================================================ */
+SELECT TOP (20)
+    wait_type,
+    wait_time_ms,
+    100.0 * wait_time_ms / SUM(wait_time_ms) OVER() AS pct
+FROM sys.dm_os_wait_stats
+WHERE wait_type NOT IN ('SLEEP_TASK','SLEEP_SYSTEMTASK','BROKER_TASK_STOP','BROKER_EVENTHANDLER','XE_TIMER_EVENT','XE_DISPATCHER_WAIT')
+ORDER BY wait_time_ms DESC;
+
+/* ============================================================
+   10) Tempdb spills (advanced)
+   ============================================================ */
+-- Requires Query Store or actual plan capture for full detail
+-- Simplified check:
+SELECT TOP (20)
+    qs.plan_handle,
+    t.text,
+    qs.total_grant_kb,
+    qs.max_grant_kb
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) t
+ORDER BY qs.max_grant_kb DESC;
+
+/* ============================================================
+   11) Blocker session detail
+   ============================================================ */
+DECLARE @blocker INT = <BlockingSessionID>;
+SELECT
+    s.session_id,
+    s.login_name,
+    s.host_name,
+    s.status,
+    c.client_net_address,
+    r.command,
+    r.wait_type,
+    r.wait_time,
+    r.blocking_session_id,
+    t.text AS last_sql_text
+FROM sys.dm_exec_sessions s
+JOIN sys.dm_exec_connections c ON s.session_id = c.session_id
+LEFT JOIN sys.dm_exec_requests r ON s.session_id = r.session_id
+OUTER APPLY sys.dm_exec_sql_text(c.most_recent_sql_handle) t
+WHERE s.session_id = @blocker;
+
+/* ============================================================
+   12) Mitigation examples
+   ============================================================ */
+-- OPTION (RECOMPILE) at query level
+-- OPTION (OPTIMIZE FOR (@Param1 = 'typical'))
+-- Update stats with FULLSCAN
+-- DBCC FREEPROCCACHE (<plan_handle>) -- targeted plan removal
