@@ -1,3 +1,58 @@
+SELECT Edition FROM ReportServer.dbo.ConfigurationInfo WHERE Name = 'Edition';
+
+--2
+
+USE ReportServer;
+GO
+
+-- All registered nodes (encryption key holders)
+SELECT InstallationID, MachineName, InstanceName, CreatedDate
+FROM dbo.Keys
+ORDER BY CreatedDate;
+
+-- Catalog of report server machines (older versions may have dbo.Server)
+SELECT *
+FROM dbo.Server; -- if present in your build/version
+
+-- Sanity check: NULL row in dbo.Keys is normal – DO NOT DELETE it.
+SELECT *
+FROM dbo.Keys
+WHERE MachineName IS NULL;
+----------------------------------------------------------
+The NULL row in dbo.Keys is required; do not delete it.
+----------------------------------------------------------
+
+USE ReportServer;
+GO
+
+BEGIN TRAN;
+
+-- 1) Review entries and copy the exact MachineName/InstallationID of the stale node
+SELECT InstallationID, MachineName, InstanceName, CreatedDate
+FROM dbo.Keys
+ORDER BY CreatedDate;
+
+-- 2) Delete ONLY the stale node's row. DO NOT delete the NULL row.
+DELETE K
+FROM dbo.Keys AS K
+WHERE K.MachineName = N'OldServerName' -- replace with the decommissioned server
+  AND K.InstallationID = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'; -- optional precision safeguard
+
+-- 3) (Optional) If your schema has dbo.Server, remove the old server record as well.
+--    Not all versions include this table.
+IF OBJECT_ID('dbo.Server') IS NOT NULL
+BEGIN
+    DELETE S
+    FROM dbo.Server AS S
+    WHERE S.MachineName = N'OldServerName';
+END
+
+COMMIT;
+----------------------------------------------------------------------
+/*
+If you delete the wrong row, SSRS will recreate its own entry the next time it initializes—but you may need to restore the encryption key (and/or revert the DB backup) to fully recover secrets
+
+
 here’s a self‑contained PowerShell script that safely cleans up stale scale‑out entries from the ReportServer database and resolves the SSRS error:
 
 “The feature: ‘Scale‑out deployment’ is not supported in this edition of Reporting Services.”
