@@ -1,15 +1,10 @@
---1
-SELECT Edition FROM ReportServer.dbo.ConfigurationInfo WHERE Name = 'Edition';
-
---2
 
 USE ReportServer;
 GO
 
 -- All registered nodes (encryption key holders)
-SELECT InstallationID, MachineName, InstanceName, CreatedDate
+SELECT *
 FROM dbo.Keys
-ORDER BY CreatedDate;
 
 -- Catalog of report server machines (older versions may have dbo.Server)
 SELECT *
@@ -28,12 +23,7 @@ GO
 
 BEGIN TRAN;
 
--- 1) Review entries and copy the exact MachineName/InstallationID of the stale node
-SELECT InstallationID, MachineName, InstanceName, CreatedDate
-FROM dbo.Keys
-ORDER BY CreatedDate;
-
--- 2) Delete ONLY the stale node's row. DO NOT delete the NULL row.
+-- 1) Delete ONLY the stale node's row. DO NOT delete the NULL row.
 DELETE K
 FROM dbo.Keys AS K
 WHERE K.MachineName = N'OldServerName' -- replace with the decommissioned server
