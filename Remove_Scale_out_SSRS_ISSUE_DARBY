@@ -1,0 +1,262 @@
+here’s a self‑contained PowerShell script that safely cleans up stale scale‑out entries from the ReportServer database and resolves the SSRS error:
+
+“The feature: ‘Scale‑out deployment’ is not supported in this edition of Reporting Services.”
+
+The script will:
+
+Back up the SSRS encryption key (via rskeymgmt),
+Stop the SSRS service,
+List all ReportServer membership entries (scale‑out nodes),
+Remove the unwanted node(s) using rskeymgmt -r (preferred) or direct T‑SQL as a fallback,
+Start the SSRS service, and
+Verify that only one node remains.
+
+
+Why this works: scale‑out is an Enterprise‑only feature; Standard Edition must have a single node bound to the ReportServer DB. Extra entries live in the ReportServer DB (notably dbo.Keys) and/or as rskey memberships; removing them clears the error. [sqlserverv...rsions.com], [mssqltips.com]
+Prereqs
+
+Run as Administrator on the SSRS server.
+You know which entry you want to keep (normally the current server).
+rskeymgmt.exe is installed with SSRS. We’ll auto‑discover it.
+(We use -e/-f/-p to back up the key; -l to list; and -r to remove by InstallationID.) [learn.microsoft.com]
+No other SSRS instances should be actively pointing at the same ReportServer DB during cleanup; otherwise they can re‑insert themselves into dbo.Keys.
+
+
+<# 
+.SYNOPSIS
+  SSRS Standard Edition cleanup when “Scale-out deployment is not supported” appears.
+
+.DESCRIPTION
+  - Backs up SSRS encryption key (rskeymgmt -e).
+  - Stops SSRS service on this machine.
+  - Lists current scale-out members from ReportServer.dbo.Keys and rskeymgmt -l.
+  - Removes selected stale members (preferred: rskeymgmt -r; fallback: T-SQL delete from dbo.Keys).
+  - Restarts service and verifies single-member state.
+
+.PARAMETER SqlInstance
+  SQL Server instance hosting ReportServer DB. Default: (local)
+
+.PARAMETER ReportServerDb
+  ReportServer database name. Default: ReportServer
+
+.PARAMETER SsrsInstanceName
+  The *Reporting Services* instance name for rskeymgmt -i (e.g. SSRS or MSSQLSERVER).
+  NOTE: This is the **Report Server** instance name, not the SQL Database Engine instance.  # See: https://learn.microsoft.com/.../rskeymgmt-utility-ssrs  and clarification that -i targets RS instance. 
+  (Docs clarify rskeymgmt -i is the report server instance; see also community note.) 
+
+.PARAMETER KeyBackupPath
+  Path where the .snk backup will be saved.
+
+.PARAMETER KeyPassword
+  Password used to protect the encryption key backup (.snk).
+
+.PARAMETER RemoveAllButLocal
+  If set, will automatically keep entries whose MachineName matches $env:COMPUTERNAME and remove the rest.
+
+.NOTES
+  Tested with SSRS 2017–2022. Should also work with SSRS 2025.
+
+#>
+
+[CmdletBinding(SupportsShouldProcess=$true)]
+param(
+  [string]$SqlInstance     = "(local)",
+  [string]$ReportServerDb  = "ReportServer",
+  [string]$SsrsInstanceName = "SSRS",     # For older installs it may be MSSQLSERVER
+  [string]$KeyBackupPath   = "C:\SSRS-EncryptionKey.snk",
+  [Parameter(Mandatory=$true)]
+  [securestring]$KeyPassword,
+  [switch]$RemoveAllButLocal
+)
+
+# --- Helper: resolve rskeymgmt.exe ---
+function Get-RsKeyMgmtPath {
+  $candidates = @(
+    "$env:ProgramFiles\Microsoft SQL Server\*\Tools\Binn\rskeymgmt.exe",
+    "$env:ProgramFiles(x86)\Microsoft SQL Server\*\Tools\Binn\rskeymgmt.exe"
+  )
+  $found = Get-ChildItem -Path $candidates -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if (-not $found) { $found = Get-Command rskeymgmt.exe -ErrorAction SilentlyContinue }
+  if (-not $found) { throw "rskeymgmt.exe not found. Ensure SSRS tools are installed on this server." }
+  return $found.Path
+}
+
+# --- Helper: run T-SQL using .NET (no Invoke-Sqlcmd dependency) ---
+function Invoke-Tsql {
+  param(
+    [string]$ServerInstance,
+    [string]$Database,
+    [string]$Query
+  )
+  Add-Type -AssemblyName System.Data
+  $cs = "Server=$ServerInstance;Database=$Database;Integrated Security=SSPI;TrustServerCertificate=True;"
+  $conn = New-Object System.Data.SqlClient.SqlConnection $cs
+  $cmd  = $conn.CreateCommand()
+  $cmd.CommandText = $Query
+  $dt   = New-Object System.Data.DataTable
+  try {
+    $conn.Open()
+    $rdr = $cmd.ExecuteReader()
+    $dt.Load($rdr)
+    $rdr.Close()
+    return $dt
+  }
+  finally {
+    if ($conn.State -ne 'Closed') { $conn.Close() }
+  }
+}
+
+# --- Helper: convert secure string to plain for rskeymgmt ---
+function ConvertTo-Plain {
+  param([securestring]$Secure)
+  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+  try { return [Runtime.InteropServices.Marshal]::PtrToStringUni($bstr) }
+  finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+
+# --- Detect SSRS Windows service ---
+function Get-SSRSService {
+  # Newer SSRS: SQLServerReportingServices ; legacy may include 'ReportServer'
+  $svc = Get-Service | Where-Object {
+    $_.Name -match 'SQLServerReportingServices' -or $_.DisplayName -match 'Reporting Services'
+  } | Select-Object -First 1
+  if (-not $svc) { Write-Warning "Could not find SSRS service automatically. You may need to stop/start it manually."; }
+  return $svc
+}
+
+Write-Host "=== SSRS Scale-out Cleanup ===" -ForegroundColor Cyan
+
+# 1) Back up encryption key (rskeymgmt -e -f -p -i)
+$rskey = Get-RsKeyMgmtPath
+$keyPwdPlain = ConvertTo-Plain $KeyPassword
+
+if ($PSCmdlet.ShouldProcess("Encryption key", "Backup to $KeyBackupPath")) {
+  Write-Host "Backing up SSRS encryption key to: $KeyBackupPath" -ForegroundColor Yellow
+  $args = @('-e', '-f', $KeyBackupPath, '-p', $keyPwdPlain, '-i', $SsrsInstanceName)
+  $p = Start-Process -FilePath $rskey -ArgumentList $args -NoNewWindow -PassThru -Wait
+  if ($p.ExitCode -ne 0) { throw "rskeymgmt -e failed with exit code $($p.ExitCode)." }
+}
+
+# 2) Stop SSRS service
+$svc = Get-SSRSService
+if ($svc) {
+  if ($svc.Status -ne 'Stopped') {
+    if ($PSCmdlet.ShouldProcess($svc.Name, "Stop SSRS service")) {
+      Write-Host "Stopping service $($svc.Name)..." -ForegroundColor Yellow
+      Stop-Service -Name $svc.Name -ErrorAction Stop
+      $svc.WaitForStatus('Stopped','00:00:20')
+    }
+  }
+}
+
+# 3) Show current scale-out members (from dbo.Keys and rskeymgmt -l)
+Write-Host "`nReading ReportServer.dbo.Keys..." -ForegroundColor Yellow
+$query = @"
+SELECT InstallationID, MachineName, InstanceName, CreatedDate
+FROM dbo.Keys
+ORDER BY CreatedDate;
+"@
+$keys = Invoke-Tsql -ServerInstance $SqlInstance -Database $ReportServerDb -Query $query
+$keys | Format-Table -AutoSize
+
+Write-Host "`nrskeymgmt -l (scale-out membership known to SSRS):" -ForegroundColor Yellow
+$p = Start-Process -FilePath $rskey -ArgumentList @('-l') -NoNewWindow -PassThru -Wait -RedirectStandardOutput "$env:TEMP\rskeymgmt_list.txt"
+Get-Content "$env:TEMP\rskeymgmt_list.txt"
+
+# Build removal list
+$toRemove = @()
+if ($RemoveAllButLocal) {
+  $local = $env:COMPUTERNAME
+  $toRemove = $keys | Where-Object { $_.MachineName -ne $null -and $_.MachineName -ne $local }
+  if ($toRemove.Count -eq 0) { Write-Host "Nothing to remove. Only local node remains." -ForegroundColor Green }
+} else {
+  Write-Host "`nSelect the entries you want to remove." -ForegroundColor Yellow
+  Write-Host "Tip: Keep the row where MachineName = $($env:COMPUTERNAME) (if present) and remove other servers." -ForegroundColor DarkGray
+  $i = 0
+  $indexed = $keys | Where-Object { $_.MachineName -ne $null } | ForEach-Object {
+    $script:i++
+    [PSCustomObject]@{Index=$i; InstallationID=$_.InstallationID; MachineName=$_.MachineName; InstanceName=$_.InstanceName}
+  }
+  $indexed | Format-Table -AutoSize
+  if ($indexed) {
+    $sel = Read-Host "Enter comma-separated Index numbers to remove (or press Enter to skip)"
+    if ($sel) {
+      $idx = $sel.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' }
+      $toRemove = $indexed | Where-Object { $idx -contains $_.Index }
+    }
+  }
+}
+
+# 4) Remove via rskeymgmt -r ; fallback: DELETE dbo.Keys
+foreach ($row in $toRemove) {
+  $installationId = $row.InstallationID
+  $machine        = $row.MachineName
+
+  if ($PSCmdlet.ShouldProcess("Node $machine ($installationId)", "Remove from scale-out (rskeymgmt -r)")) {
+    Write-Host "Removing node via rskeymgmt -r $installationId ..." -ForegroundColor Yellow
+    $p = Start-Process -FilePath $rskey -ArgumentList @('-r', $installationId) -NoNewWindow -PassThru -Wait
+    if ($p.ExitCode -ne 0) {
+      Write-Warning "rskeymgmt -r failed (code $($p.ExitCode)). Falling back to T-SQL deletion from dbo.Keys for $machine."
+      $del = @"
+DELETE K
+FROM dbo.Keys AS K
+WHERE K.InstallationID = '$installationId' AND K.MachineName = N'$machine';
+"@
+      Invoke-Tsql -ServerInstance $SqlInstance -Database $ReportServerDb -Query $del | Out-Null
+    }
+  }
+}
+
+# 5) Start SSRS
+if ($svc) {
+  if ($PSCmdlet.ShouldProcess($svc.Name, "Start SSRS service")) {
+    Write-Host "Starting service $($svc.Name)..." -ForegroundColor Yellow
+    Start-Service -Name $svc.Name -ErrorAction Stop
+    $svc.WaitForStatus('Running','00:00:30')
+  }
+}
+
+# 6) Verify single-node state (plus NULL row)
+Write-Host "`nVerifying membership after cleanup..." -ForegroundColor Yellow
+$final = Invoke-Tsql -ServerInstance $SqlInstance -Database $ReportServerDb -Query $query
+$final | Format-Table -AutoSize
+
+$nonNull = $final | Where-Object { $_.MachineName -ne $null }
+if ($nonNull.Count -gt 1) {
+  Write-Warning "More than one node still present. Ensure no other SSRS service is running and re-run cleanup."
+} elseif ($nonNull.Count -eq 1) {
+  Write-Host "Success: Single node remains: $($nonNull[0].MachineName)" -ForegroundColor Green
+} else {
+  Write-Warning "No non-NULL rows found in dbo.Keys. Start SSRS once; it will re-register the local instance automatically."
+}
+
+Write-Host "`nDone." -ForegroundColor Cyan
+
+
+
+---How to run it
+
+Save the script to C:\SSRS-ScaleOut-Cleanup.ps1.
+Open PowerShell as Administrator and execute:
+
+# Prompt for a key password (used to protect the .snk file)
+$pwd = Read-Host "Password to protect the encryption key backup (.snk)" -AsSecureString
+
+# Example: local SQL instance, default ReportServer DB, RS instance name 'SSRS'
+.\SSRS-ScaleOut-Cleanup.ps1 `
+  -SqlInstance "(local)" `
+  -ReportServerDb "ReportServer" `
+  -SsrsInstanceName "SSRS" `
+  -KeyBackupPath "C:\SSRS-EncryptionKey.snk" `
+  -KeyPassword $pwd `
+Notes
+
+The rskeymgmt flags used here are the officially documented way to back up (-e -f -p -i), list (-l), and remove (-r <InstallationID>) report‑server membership and keys. [learn.microsoft.com]
+Passing -i specifies the Report Server instance name (commonly SSRS on newer installs, or MSSQLSERVER for default); it is not the SQL Database Engine instance name. [learn.microsoft.com], [superuser.com]
+If rskeymgmt -r cannot reach the decommissioned node, deleting the stale row from ReportServer.dbo.Keys is the accepted fallback (keep the NULL row). Ensure other SSRS nodes are stopped so they don’t re‑insert themselves. [learn.microsoft.com], [kendralittle.com]
+Scale‑out (web farm) is Enterprise‑only; Standard Edition must run single‑node. [sqlserverv...rsions.com]
+If you prefer a UI route: Reporting Services Configuration Manager → Scale‑out Deployment can remove servers when they’re reachable. Otherwise use rskeymgmt/T‑SQL as above. [mssqltips.com]
+
+
+Why we back up the encryption key first
+The encryption key protects sensitive data (data‑source credentials, etc.) and should always be backed up before operations like this. You can do it via Config Manager or rskeymgmt -e -f -p. [learn.microsoft.com], [learn.microsoft.com]
