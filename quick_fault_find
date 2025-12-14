@@ -1,0 +1,71 @@
+/* 
+Quick Fault-Finding Dashboard
+Works when Query Store is disabled
+*/
+
+-- Top 20 queries by average CPU time
+SELECT TOP 20
+    DB_NAME(st.dbid) AS DatabaseName,
+    qs.execution_count,
+    qs.total_worker_time / qs.execution_count AS AvgCPU,
+    qs.total_elapsed_time / qs.execution_count AS AvgDuration,
+    SUBSTRING(st.text, (qs.statement_start_offset/2)+1,
+        ((CASE qs.statement_end_offset
+            WHEN -1 THEN DATALENGTH(st.text)
+            ELSE qs.statement_end_offset END
+            - qs.statement_start_offset)/2)+1) AS QueryText
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+ORDER BY AvgCPU DESC;
+
+------------------------------------------------------------
+
+-- Top 20 queries by average duration
+SELECT TOP 20
+    DB_NAME(st.dbid) AS DatabaseName,
+    qs.execution_count,
+    qs.total_elapsed_time / qs.execution_count AS AvgDuration,
+    qs.total_worker_time / qs.execution_count AS AvgCPU,
+    SUBSTRING(st.text, (qs.statement_start_offset/2)+1,
+        ((CASE qs.statement_end_offset
+            WHEN -1 THEN DATALENGTH(st.text)
+            ELSE qs.statement_end_offset END
+            - qs.statement_start_offset)/2)+1) AS QueryText
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+ORDER BY AvgDuration DESC;
+
+------------------------------------------------------------
+
+-- Top 20 queries by logical reads (I/O heavy)
+SELECT TOP 20
+    DB_NAME(st.dbid) AS DatabaseName,
+    qs.execution_count,
+    qs.total_logical_reads / qs.execution_count AS AvgReads,
+    qs.total_logical_writes / qs.execution_count AS AvgWrites,
+    qs.total_elapsed_time / qs.execution_count AS AvgDuration,
+    SUBSTRING(st.text, (qs.statement_start_offset/2)+1,
+        ((CASE qs.statement_end_offset
+            WHEN -1 THEN DATALENGTH(st.text)
+            ELSE qs.statement_end_offset END
+            - qs.statement_start_offset)/2)+1) AS QueryText
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+ORDER BY AvgReads DESC;
+
+------------------------------------------------------------
+
+-- Top 20 queries by execution count (frequently run)
+SELECT TOP 20
+    DB_NAME(st.dbid) AS DatabaseName,
+    qs.execution_count,
+    qs.total_elapsed_time / qs.execution_count AS AvgDuration,
+    qs.total_worker_time / qs.execution_count AS AvgCPU,
+    SUBSTRING(st.text, (qs.statement_start_offset/2)+1,
+        ((CASE qs.statement_end_offset
+            WHEN -1 THEN DATALENGTH(st.text)
+            ELSE qs.statement_end_offset END
+            - qs.statement_start_offset)/2)+1) AS QueryText
+FROM sys.dm_exec_query_stats qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+ORDER BY qs.execution_count DESC;
