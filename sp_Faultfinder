@@ -1,0 +1,173 @@
+--SP_faultFinder
+
+--creates a table and stored procedure then use the below queries to see results\trends
+------------------------------------
+--Example procedure usage
+--EXEC dbo.sp_FaultFinder @TopN = 10, @SortBy = 'CPU', @OutputMode = 'Summary';
+--EXEC dbo.sp_FaultFinder @TopN = 5, @SortBy = 'Duration', @OutputMode = 'Detailed';
+--EXEC dbo.sp_FaultFinder @TopN = 20, @SortBy = 'Reads', @Export = 1;
+--Reporting
+/*
+-- Top queries by CPU over the last 7 days
+SELECT TOP 20
+    QueryText,
+    DatabaseName,
+    COUNT(*) AS SnapshotsCaptured,
+    AVG(AvgCPU) AS AvgCPU,
+    MAX(AvgCPU) AS PeakCPU,
+    AVG(AvgDuration) AS AvgDuration,
+    MAX(AvgDuration) AS PeakDuration,
+    AVG(AvgReads) AS AvgReads,
+    MAX(AvgReads) AS PeakReads,
+    MIN(LogDate) AS FirstSeen,
+    MAX(LogDate) AS LastSeen
+FROM dbo.FaultFinderLog
+WHERE LogDate >= DATEADD(DAY, -7, GETDATE())
+GROUP BY QueryText, DatabaseName
+ORDER BY AvgCPU DESC;
+
+------------------------------------------------------------
+
+-- Trend report: average duration per day for top queries
+SELECT 
+    CAST(LogDate AS DATE) AS LogDay,
+    QueryText,
+    DatabaseName,
+    AVG(AvgDuration) AS AvgDurationPerDay,
+    MAX(AvgDuration) AS PeakDurationPerDay
+FROM dbo.FaultFinderLog
+WHERE LogDate >= DATEADD(DAY, -7, GETDATE())
+GROUP BY CAST(LogDate AS DATE), QueryText, DatabaseName
+ORDER BY LogDay, AvgDurationPerDay DESC;
+
+------------------------------------------------------------
+
+-- Most frequently captured queries (appear in snapshots most often)
+SELECT TOP 20
+    QueryText,
+    DatabaseName,
+    COUNT(*) AS TimesCaptured,
+    AVG(AvgCPU) AS AvgCPU,
+    AVG(AvgDuration) AS AvgDuration
+FROM dbo.FaultFinderLog
+WHERE LogDate >= DATEADD(DAY, -30, GETDATE())
+GROUP BY QueryText, DatabaseName
+ORDER BY TimesCaptured DESC;
+*/
+-------------------------------------------------------------------------------------
+-- Create a logging table if it doesn't exist
+IF OBJECT_ID('dbo.FaultFinderLog', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.FaultFinderLog (
+        LogID INT IDENTITY(1,1) PRIMARY KEY,
+        LogDate DATETIME DEFAULT GETDATE(),
+        DatabaseName NVARCHAR(128),
+        ExecutionCount BIGINT,
+        CreationTime DATETIME,
+        LastExecutionTime DATETIME,
+        AvgCPU FLOAT,
+        AvgDuration FLOAT,
+        AvgReads FLOAT,
+        AvgWrites FLOAT,
+        TotalCPU BIGINT,
+        TotalDuration BIGINT,
+        TotalReads BIGINT,
+        TotalWrites BIGINT,
+        QueryText NVARCHAR(MAX),
+        QueryPlanXML XML
+    );
+END
+GO
+
+IF OBJECT_ID('dbo.sp_FaultFinder', 'P') IS NOT NULL
+    DROP PROCEDURE dbo.sp_FaultFinder;
+GO
+
+CREATE PROCEDURE dbo.sp_FaultFinder
+    @TopN INT = 20,                  -- number of queries to return
+    @SortBy NVARCHAR(20) = 'CPU',    -- options: CPU, Duration, Reads, Writes, Count
+    @DatabaseName NVARCHAR(128) = NULL, -- optional filter by database
+    @Keyword NVARCHAR(100) = NULL,      -- optional filter by query text keyword
+    @OutputMode NVARCHAR(20) = 'Summary', -- options: Summary, Detailed
+    @Export BIT = 0                     -- set to 1 to log results into FaultFinderLog
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH QueryStats AS (
+        SELECT
+            DB_NAME(st.dbid) AS DatabaseName,
+            qs.execution_count,
+            qs.creation_time,
+            qs.last_execution_time,
+            qs.total_worker_time / NULLIF(qs.execution_count,0) AS AvgCPU,
+            qs.total_elapsed_time / NULLIF(qs.execution_count,0) AS AvgDuration,
+            qs.total_logical_reads / NULLIF(qs.execution_count,0) AS AvgReads,
+            qs.total_logical_writes / NULLIF(qs.execution_count,0) AS AvgWrites,
+            qs.total_worker_time AS TotalCPU,
+            qs.total_elapsed_time AS TotalDuration,
+            qs.total_logical_reads AS TotalReads,
+            qs.total_logical_writes AS TotalWrites,
+            SUBSTRING(st.text, (qs.statement_start_offset/2)+1,
+                ((CASE qs.statement_end_offset
+                    WHEN -1 THEN DATALENGTH(st.text)
+                    ELSE qs.statement_end_offset END
+                    - qs.statement_start_offset)/2)+1) AS QueryText,
+            qp.query_plan
+        FROM sys.dm_exec_query_stats qs
+        CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+        CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+    )
+    SELECT TOP (@TopN)
+        DatabaseName,
+        execution_count,
+        creation_time,
+        last_execution_time,
+        AvgCPU,
+        AvgDuration,
+        AvgReads,
+        AvgWrites,
+        TotalCPU,
+        TotalDuration,
+        TotalReads,
+        TotalWrites,
+        QueryText,
+        CASE @OutputMode 
+            WHEN 'Detailed' THEN query_plan
+            ELSE NULL
+        END AS QueryPlanXML
+    INTO #Results
+    FROM QueryStats
+    WHERE (@DatabaseName IS NULL OR DatabaseName = @DatabaseName)
+      AND (@Keyword IS NULL OR QueryText LIKE '%' + @Keyword + '%')
+    ORDER BY
+        CASE @SortBy
+            WHEN 'CPU' THEN AvgCPU
+            WHEN 'Duration' THEN AvgDuration
+            WHEN 'Reads' THEN AvgReads
+            WHEN 'Writes' THEN AvgWrites
+            WHEN 'Count' THEN execution_count
+        END DESC;
+
+    -- Export results if requested
+    IF @Export = 1
+    BEGIN
+        INSERT INTO dbo.FaultFinderLog (
+            DatabaseName, ExecutionCount, CreationTime, LastExecutionTime,
+            AvgCPU, AvgDuration, AvgReads, AvgWrites,
+            TotalCPU, TotalDuration, TotalReads, TotalWrites,
+            QueryText, QueryPlanXML
+        )
+        SELECT DatabaseName, ExecutionCount, CreationTime, LastExecutionTime,
+               AvgCPU, AvgDuration, AvgReads, AvgWrites,
+               TotalCPU, TotalDuration, TotalReads, TotalWrites,
+               QueryText, QueryPlanXML
+        FROM #Results;
+    END
+
+    -- Return results to caller
+    SELECT * FROM #Results;
+
+    DROP TABLE #Results;
+END
+GO
