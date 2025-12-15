@@ -1,4 +1,5 @@
 --Query Plan issue
+-- REQUIRES QUERYSTORE ENABLED
 
 -- Look-back window (change as needed)
 DECLARE @MinutesBack INT = 1440; -- last 24 hours
