@@ -1,0 +1,32 @@
+--Query Plan issue
+
+-- Look-back window (change as needed)
+DECLARE @MinutesBack INT = 1440; -- last 24 hours
+DECLARE @ProcName   sysname = N'storedprocnamehere';-- add sp name
+
+DECLARE @ObjId int = OBJECT_ID(@ProcName);
+
+IF @ObjId IS NULL
+BEGIN
+    RAISERROR('Could not resolve object name: %s', 16, 1, @ProcName);
+    RETURN;
+END
+
+SELECT 
+    qsq.query_id,
+    qsp.plan_id,
+    SUM(rs.count_executions)                          AS executions,
+    MIN(rs.first_execution_time)                      AS first_exec_time_lookback,
+    MAX(rs.last_execution_time)                       AS last_exec_time_lookback,
+    CAST(AVG(rs.avg_duration)          AS bigint)     AS avg_duration_ms,
+    CAST(AVG(rs.avg_cpu_time)          AS bigint)     AS avg_cpu_ms,
+    CAST(AVG(rs.avg_logical_io_reads)  AS bigint)     AS avg_logical_reads,
+    CAST(AVG(rs.avg_dop)               AS int)        AS avg_dop
+FROM sys.query_store_query                  AS qsq
+JOIN sys.query_store_plan                   AS qsp ON qsp.query_id = qsq.query_id
+JOIN sys.query_store_runtime_stats          AS rs  ON rs.plan_id   = qsp.plan_id
+JOIN sys.query_store_runtime_stats_interval AS rsi ON rsi.runtime_stats_interval_id = rs.runtime_stats_interval_id
+WHERE qsq.object_id = @ObjId
+  AND rsi.end_time >= DATEADD(MINUTE, -@MinutesBack, SYSUTCDATETIME())
+GROUP BY qsq.query_id, qsp.plan_id
+ORDER BY avg_duration_ms ASC
