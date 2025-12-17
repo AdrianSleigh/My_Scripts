@@ -1,4 +1,5 @@
---SP_faultFinder
+--SP_faultFinder v2.0 17/12/25
+--fixed issue that logging to table was not working
 
 --creates a table and stored procedure then use the below queries to see results\trends
 ------------------------------------
@@ -56,11 +57,12 @@ ORDER BY TimesCaptured DESC;
 */
 -------------------------------------------------------------------------------------
 -- Create a logging table if it doesn't exist
+
 IF OBJECT_ID('dbo.FaultFinderLog', 'U') IS NULL
 BEGIN
     CREATE TABLE dbo.FaultFinderLog (
         LogID INT IDENTITY(1,1) PRIMARY KEY,
-        LogDate DATETIME DEFAULT GETDATE(),
+        LogDate DATETIME NOT NULL DEFAULT GETDATE(),
         DatabaseName NVARCHAR(128),
         ExecutionCount BIGINT,
         CreationTime DATETIME,
@@ -84,90 +86,109 @@ IF OBJECT_ID('dbo.sp_FaultFinder', 'P') IS NOT NULL
 GO
 
 CREATE PROCEDURE dbo.sp_FaultFinder
-    @TopN INT = 20,                  -- number of queries to return
-    @SortBy NVARCHAR(20) = 'CPU',    -- options: CPU, Duration, Reads, Writes, Count
-    @DatabaseName NVARCHAR(128) = NULL, -- optional filter by database
-    @Keyword NVARCHAR(100) = NULL,      -- optional filter by query text keyword
-    @OutputMode NVARCHAR(20) = 'Summary', -- options: Summary, Detailed
-    @Export BIT = 0                     -- set to 1 to log results into FaultFinderLog
+    @TopN INT = 20,
+    @SortBy NVARCHAR(20) = 'CPU',         -- CPU | Duration | Reads | Writes | Count
+    @DatabaseName NVARCHAR(128) = NULL,
+    @Keyword NVARCHAR(100) = NULL,
+    @OutputMode NVARCHAR(20) = 'Summary', -- Summary | Detailed
+    @Export BIT = 0
 AS
 BEGIN
     SET NOCOUNT ON;
+    SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 
-    ;WITH QueryStats AS (
-        SELECT
-            DB_NAME(st.dbid) AS DatabaseName,
-            qs.execution_count,
-            qs.creation_time,
-            qs.last_execution_time,
-            qs.total_worker_time / NULLIF(qs.execution_count,0) AS AvgCPU,
-            qs.total_elapsed_time / NULLIF(qs.execution_count,0) AS AvgDuration,
-            qs.total_logical_reads / NULLIF(qs.execution_count,0) AS AvgReads,
-            qs.total_logical_writes / NULLIF(qs.execution_count,0) AS AvgWrites,
-            qs.total_worker_time AS TotalCPU,
-            qs.total_elapsed_time AS TotalDuration,
-            qs.total_logical_reads AS TotalReads,
-            qs.total_logical_writes AS TotalWrites,
-            SUBSTRING(st.text, (qs.statement_start_offset/2)+1,
-                ((CASE qs.statement_end_offset
-                    WHEN -1 THEN DATALENGTH(st.text)
-                    ELSE qs.statement_end_offset END
-                    - qs.statement_start_offset)/2)+1) AS QueryText,
-            qp.query_plan
-        FROM sys.dm_exec_query_stats qs
-        CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
-        CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
-    )
-    SELECT TOP (@TopN)
-        DatabaseName,
-        execution_count,
-        creation_time,
-        last_execution_time,
-        AvgCPU,
-        AvgDuration,
-        AvgReads,
-        AvgWrites,
-        TotalCPU,
-        TotalDuration,
-        TotalReads,
-        TotalWrites,
-        QueryText,
-        CASE @OutputMode 
-            WHEN 'Detailed' THEN query_plan
-            ELSE NULL
-        END AS QueryPlanXML
-    INTO #Results
-    FROM QueryStats
-    WHERE (@DatabaseName IS NULL OR DatabaseName = @DatabaseName)
-      AND (@Keyword IS NULL OR QueryText LIKE '%' + @Keyword + '%')
-    ORDER BY
-        CASE @SortBy
-            WHEN 'CPU' THEN AvgCPU
-            WHEN 'Duration' THEN AvgDuration
-            WHEN 'Reads' THEN AvgReads
-            WHEN 'Writes' THEN AvgWrites
-            WHEN 'Count' THEN execution_count
-        END DESC;
-
-    -- Export results if requested
-    IF @Export = 1
+    -- Validate @SortBy
+    IF UPPER(@SortBy) NOT IN ('CPU','DURATION','READS','WRITES','COUNT')
     BEGIN
-        INSERT INTO dbo.FaultFinderLog (
-            DatabaseName, ExecutionCount, CreationTime, LastExecutionTime,
-            AvgCPU, AvgDuration, AvgReads, AvgWrites,
-            TotalCPU, TotalDuration, TotalReads, TotalWrites,
-            QueryText, QueryPlanXML
-        )
-        SELECT DatabaseName, ExecutionCount, CreationTime, LastExecutionTime,
-               AvgCPU, AvgDuration, AvgReads, AvgWrites,
-               TotalCPU, TotalDuration, TotalReads, TotalWrites,
-               QueryText, QueryPlanXML
-        FROM #Results;
+        RAISERROR('Invalid @SortBy. Use CPU, Duration, Reads, Writes, or Count.', 16, 1);
+        RETURN;
     END
 
-    -- Return results to caller
-    SELECT * FROM #Results;
+    BEGIN TRY
+        ;WITH QueryStats AS (
+            SELECT
+                DB_NAME(st.dbid) AS DatabaseName,
+                qs.execution_count AS ExecutionCount,
+                qs.creation_time    AS CreationTime,
+                qs.last_execution_time AS LastExecutionTime,
+                qs.total_worker_time / NULLIF(qs.execution_count,0)  AS AvgCPU,
+                qs.total_elapsed_time / NULLIF(qs.execution_count,0) AS AvgDuration,
+                qs.total_logical_reads / NULLIF(qs.execution_count,0) AS AvgReads,
+                qs.total_logical_writes / NULLIF(qs.execution_count,0) AS AvgWrites,
+                qs.total_worker_time     AS TotalCPU,
+                qs.total_elapsed_time    AS TotalDuration,
+                qs.total_logical_reads   AS TotalReads,
+                qs.total_logical_writes  AS TotalWrites,
+                SUBSTRING(st.text, (qs.statement_start_offset/2)+1,
+                    ((CASE qs.statement_end_offset
+                        WHEN -1 THEN DATALENGTH(st.text)
+                        ELSE qs.statement_end_offset END
+                        - qs.statement_start_offset)/2)+1) AS QueryText,
+                qp.query_plan AS QueryPlanXML
+            FROM sys.dm_exec_query_stats qs
+            CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
+            CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) qp
+        )
+        SELECT TOP (@TopN)
+            DatabaseName,
+            ExecutionCount,
+            CreationTime,
+            LastExecutionTime,
+            AvgCPU,
+            AvgDuration,
+            AvgReads,
+            AvgWrites,
+            TotalCPU,
+            TotalDuration,
+            TotalReads,
+            TotalWrites,
+            QueryText,
+            CASE WHEN @OutputMode = 'Detailed' THEN QueryPlanXML ELSE NULL END AS QueryPlanXML
+        INTO #Results
+        FROM QueryStats
+        WHERE (@DatabaseName IS NULL OR DatabaseName = @DatabaseName)
+          AND (@Keyword IS NULL OR QueryText LIKE '%' + @Keyword + '%')
+        ORDER BY
+            CASE UPPER(@SortBy)
+                WHEN 'CPU'      THEN AvgCPU
+                WHEN 'DURATION' THEN AvgDuration
+                WHEN 'READS'    THEN AvgReads
+                WHEN 'WRITES'   THEN AvgWrites
+                WHEN 'COUNT'    THEN ExecutionCount
+            END DESC;
 
-    DROP TABLE #Results;
+        -- Export results if requested and if we captured rows
+        IF @Export = 1
+        BEGIN
+            IF EXISTS (SELECT 1 FROM #Results)
+            BEGIN
+                INSERT INTO dbo.FaultFinderLog (
+                    DatabaseName, ExecutionCount, CreationTime, LastExecutionTime,
+                    AvgCPU, AvgDuration, AvgReads, AvgWrites,
+                    TotalCPU, TotalDuration, TotalReads, TotalWrites,
+                    QueryText, QueryPlanXML
+                )
+                SELECT DatabaseName, ExecutionCount, CreationTime, LastExecutionTime,
+                       AvgCPU, AvgDuration, AvgReads, AvgWrites,
+                       TotalCPU, TotalDuration, TotalReads, TotalWrites,
+                       QueryText, QueryPlanXML
+                FROM #Results;
+            END
+        END
+
+        -- Return results to caller
+        SELECT * FROM #Results;
+
+        DROP TABLE IF EXISTS #Results;
+    END TRY
+    BEGIN CATCH
+        DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+        DECLARE @Num INT = ERROR_NUMBER();
+        DECLARE @Sev INT = ERROR_SEVERITY();
+        DECLARE @Sta INT = ERROR_STATE();
+        DECLARE @Line INT = ERROR_LINE();
+        RAISERROR('sp_FaultFinder failed (%d, sev %d, state %d) at line %d: %s', 16, 1, @Num, @Sev, @Sta, @Line, @Err);
+        IF OBJECT_ID('tempdb..#Results') IS NOT NULL DROP TABLE #Results;
+    END CATCH
 END
 GO
