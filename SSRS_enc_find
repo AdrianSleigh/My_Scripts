@@ -1,5 +1,13 @@
 --find ssrs reports that have encrypted connections
 --09/01/2025
+/*
+This script identifies:
+Shared data sources
+Embedded data sources
+Any item where CredentialRetrieval = 2 (stored credentials)
+Any item where credentials are now NULL due to key deletion
+Any item referencing the unattended execution account
+*/
 ---------------------------------------------------
 USE ReportServer;
 GO
