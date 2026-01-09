@@ -5,20 +5,19 @@ WITH DataSources AS
 (
     SELECT
         c.ItemID,
-        c.Name AS ItemName,
         c.Path,
+        c.Name AS ItemName,
         c.Type,
         ds.DataSourceID,
         ds.Name AS DataSourceName,
-        ds.Link,
         ds.Extension,
+        ds.ConnectString,
         ds.CredentialRetrieval,
-        ds.UserName,
-        ds.ConnectString
+        ds.UserName
     FROM dbo.Catalog c
     LEFT JOIN dbo.DataSource ds
         ON c.ItemID = ds.ItemID
-    WHERE c.Type IN (5, 2)  -- 5 = Shared Data Source, 2 = Report
+    WHERE c.Type IN (2, 5)  -- 2 = Report, 5 = Shared Data Source
 )
 SELECT
     CASE WHEN Type = 5 THEN 'Shared Data Source'
@@ -32,11 +31,12 @@ SELECT
     CredentialRetrieval,
     UserName,
     CASE 
-        WHEN CredentialRetrieval = 1 THEN 'No credentials (Prompt)'
-        WHEN CredentialRetrieval = 2 THEN 'Store credentials (Encrypted)'
-        WHEN CredentialRetrieval = 3 THEN 'Windows integrated'
-        WHEN CredentialRetrieval = 4 THEN 'None (Unattended)'
-    END AS CredentialModeDescription
+        WHEN CredentialRetrieval = 2 THEN 'Stored credentials (needs re-entry)'
+        WHEN CredentialRetrieval = 4 THEN 'Unattended execution account (needs re-entry)'
+        WHEN CredentialRetrieval IS NULL THEN 'Broken / missing credentials'
+        ELSE 'OK'
+    END AS Status
 FROM DataSources
-WHERE CredentialRetrieval = 2  -- Stored credentials only
+WHERE CredentialRetrieval IN (2, 4)  -- stored or unattended
+   OR UserName IS NULL               -- missing due to key deletion
 ORDER BY Path, DataSourceName;
