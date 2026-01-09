@@ -1,0 +1,42 @@
+USE ReportServer;
+GO
+
+WITH DataSources AS
+(
+    SELECT
+        c.ItemID,
+        c.Name AS ItemName,
+        c.Path,
+        c.Type,
+        ds.DataSourceID,
+        ds.Name AS DataSourceName,
+        ds.Link,
+        ds.Extension,
+        ds.CredentialRetrieval,
+        ds.UserName,
+        ds.ConnectString
+    FROM dbo.Catalog c
+    LEFT JOIN dbo.DataSource ds
+        ON c.ItemID = ds.ItemID
+    WHERE c.Type IN (5, 2)  -- 5 = Shared Data Source, 2 = Report
+)
+SELECT
+    CASE WHEN Type = 5 THEN 'Shared Data Source'
+         WHEN Type = 2 THEN 'Report (Embedded DS)'
+         ELSE 'Other'
+    END AS DataSourceType,
+    Path,
+    DataSourceName,
+    Extension,
+    ConnectString,
+    CredentialRetrieval,
+    UserName,
+    CASE 
+        WHEN CredentialRetrieval = 1 THEN 'No credentials (Prompt)'
+        WHEN CredentialRetrieval = 2 THEN 'Store credentials (Encrypted)'
+        WHEN CredentialRetrieval = 3 THEN 'Windows integrated'
+        WHEN CredentialRetrieval = 4 THEN 'None (Unattended)'
+    END AS CredentialModeDescription
+FROM DataSources
+WHERE CredentialRetrieval = 2  -- Stored credentials only
+ORDER BY Path, DataSourceName;
