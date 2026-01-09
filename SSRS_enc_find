@@ -1,3 +1,6 @@
+--find ssrs reports that have encrypted connections
+--09/01/2025
+---------------------------------------------------
 USE ReportServer;
 GO
 
@@ -8,10 +11,10 @@ WITH DataSources AS
         c.Path,
         c.Name AS ItemName,
         c.Type,
-        ds.DataSourceID,
+        ds.DSID,
         ds.Name AS DataSourceName,
         ds.Extension,
-        ds.ConnectString,
+        ds.ConnectionString,
         ds.CredentialRetrieval,
         ds.UserName
     FROM dbo.Catalog c
@@ -27,7 +30,7 @@ SELECT
     Path,
     DataSourceName,
     Extension,
-    ConnectString,
+    ConnectionString,
     CredentialRetrieval,
     UserName,
     CASE 
