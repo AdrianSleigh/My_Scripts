@@ -2,8 +2,8 @@
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 10/12/25
---Version 32.0 Added SQL 2016 out of order bersion check fixed
+--Written By Adrian Sleigh 09/01/26
+--Version 33.0 Changed for SQ 2025 version checking
 ---------------------------------------------------------------------------
 PRINT N'📊 Generating Report...';
 SELECT
@@ -142,9 +142,9 @@ PRINT N'Latest Known Version (Dec 2025) for this branch: ' + @LatestVersion;
 -- ============================================
 -- Enforce baseline: SQL Server 2019 required
 -- ============================================
-IF @MajorVersion <> 15
+IF @MajorVersion < 17
 BEGIN
-    PRINT N'⚠️ Upgrade to SQL Server 2019 required (baseline policy). Detected: '
+    PRINT N'⚠️ Upgrade to SQL Server 2025 required (baseline policy). Detected: '
         + @VersionName + N' (' + @CurrentVersion + N')';
 
     -- Additionally evaluate patch status only when LOWER than 2019
@@ -165,9 +165,9 @@ END
 -- Only for SQL Server 2019: evaluate patch status
 -- ============================================
 IF @BranchOutdated = 1
-    PRINT N'⚠️ UPDATE REQUIRED: Your SQL Server 2019 instance is not fully patched. Target: ' + @LatestVersion + N'.';
+    PRINT N'⚠️ UPDATE REQUIRED: Your SQL Server instance is not fully patched. Target: ' + @LatestVersion + N'.';
 ELSE
-    PRINT N'✅ Up to Date: Your SQL Server 2019 instance appears to be on the latest patch.';
+    PRINT N'✅ Up to Date: Your SQL Server instance appears to be on the latest patch.';
 GO
 --------------------------------------------------------------
 ---latest version 22/09/25
@@ -2977,7 +2977,6 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
-
 
 
 
