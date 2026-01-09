@@ -1,0 +1,172 @@
+/* ============================================================
+   SSIS 2019 → SSIS 2025 Compatibility Scanner
+   Author: Adrian Sleigh 09/01/2026
+   Purpose: Identify SSIS packages that may break in SQL 2025
+   ============================================================ */
+
+USE SSISDB;
+GO
+
+/* ============================================
+   1. Script Tasks / Script Components
+   (High risk due to .NET & SMO changes)
+   ============================================ */
+SELECT 
+    p.name AS ProjectName,
+    pkg.name AS PackageName,
+    'Script Task / Script Component' AS RiskType
+FROM catalog.packages pkg
+JOIN catalog.projects p ON pkg.project_id = p.project_id
+WHERE pkg.package_format_version = 8;
+
+
+/* ============================================
+   2. Execute SQL Tasks
+   (SMO & provider changes in SQL 2025)
+   ============================================ */
+SELECT 
+    p.name AS ProjectName,
+    pkg.name AS PackageName,
+    'Execute SQL Task' AS RiskType
+FROM catalog.object_parameters op
+JOIN catalog.packages pkg ON op.object_id = pkg.package_id
+JOIN catalog.projects p ON pkg.project_id = p.project_id
+WHERE op.parameter_name LIKE '%SqlStatementSource%';
+
+
+/* ============================================
+   3. OLE DB Connection Managers
+   (Legacy providers deprecated)
+   ============================================ */
+SELECT 
+    p.name AS ProjectName,
+    pkg.name AS PackageName,
+    'OLE DB Connection Manager' AS RiskType,
+    op.value AS ConnectionString
+FROM catalog.object_parameters op
+JOIN catalog.packages pkg ON op.object_id = pkg.package_id
+JOIN catalog.projects p ON pkg.project_id = p.project_id
+WHERE op.parameter_name LIKE '%ConnectionManager%'
+  AND op.value LIKE '%OLEDB%';
+
+
+/* ============================================
+   4. 32-bit Runtime Usage
+   (Removed in SQL 2025)
+   ============================================ */
+SELECT 
+    p.name AS ProjectName,
+    pkg.name AS PackageName,
+    '32-bit Runtime Enabled' AS RiskType
+FROM catalog.packages pkg
+JOIN catalog.projects p ON pkg.project_id = p.project_id
+WHERE pkg.use32bitruntime = 1;
+
+
+/* ============================================
+   5. Deprecated Providers
+   (Oracle, DB2, old ADO.NET)
+   ============================================ */
+SELECT 
+    p.name AS ProjectName,
+    pkg.name AS PackageName,
+    'Deprecated Provider' AS RiskType,
+    op.value AS Provider
+FROM catalog.object_parameters op
+JOIN catalog.packages pkg ON op.object_id = pkg.package_id
+JOIN catalog.projects p ON pkg.project_id = p.project_id
+WHERE op.value LIKE '%Oracle%'
+   OR op.value LIKE '%DB2%'
+   OR op.value LIKE '%System.Data.SqlClient%';
+
+
+/* ============================================
+   6. Packages Using Expressions
+   (May break due to .NET changes)
+   ============================================ */
+SELECT 
+    p.name AS ProjectName,
+    pkg.name AS PackageName,
+    'Expression-Based Logic' AS RiskType
+FROM catalog.object_parameters op
+JOIN catalog.packages pkg ON op.object_id = pkg.package_id
+JOIN catalog.projects p ON pkg.project_id = p.project_id
+WHERE op.parameter_name LIKE '%Expression%';
+
+
+/* ============================================
+   7. Packages Using Package Store
+   (Deprecated in SQL 2025)
+   ============================================ */
+SELECT 
+    p.name AS ProjectName,
+    pkg.name AS PackageName,
+    'Package Store Deployment' AS RiskType
+FROM catalog.packages pkg
+JOIN catalog.projects p ON pkg.project_id = p.project_id
+WHERE pkg.package_type = 0;  -- 0 = Package Store
+
+
+/* ============================================
+   8. Summary of All Risks
+   ============================================ */
+SELECT DISTINCT
+    ProjectName,
+    PackageName,
+    RiskType
+FROM (
+    SELECT p.name, pkg.name, 'Script Task' AS RiskType
+    FROM catalog.packages pkg
+    JOIN catalog.projects p ON pkg.project_id = p.project_id
+    WHERE pkg.package_format_version = 8
+
+    UNION ALL
+
+    SELECT p.name, pkg.name, 'Execute SQL Task'
+    FROM catalog.object_parameters op
+    JOIN catalog.packages pkg ON op.object_id = pkg.package_id
+    JOIN catalog.projects p ON pkg.project_id = p.project_id
+    WHERE op.parameter_name LIKE '%SqlStatementSource%'
+
+    UNION ALL
+
+    SELECT p.name, pkg.name, 'OLE DB Connection'
+    FROM catalog.object_parameters op
+    JOIN catalog.packages pkg ON op.object_id = pkg.package_id
+    JOIN catalog.projects p ON pkg.project_id = p.project_id
+    WHERE op.parameter_name LIKE '%ConnectionManager%'
+      AND op.value LIKE '%OLEDB%'
+
+    UNION ALL
+
+    SELECT p.name, pkg.name, '32-bit Runtime'
+    FROM catalog.packages pkg
+    JOIN catalog.projects p ON pkg.project_id = p.project_id
+    WHERE pkg.use32bitruntime = 1
+
+    UNION ALL
+
+    SELECT p.name, pkg.name, 'Deprecated Provider'
+    FROM catalog.object_parameters op
+    JOIN catalog.packages pkg ON op.object_id = pkg.package_id
+    JOIN catalog.projects p ON pkg.project_id = p.project_id
+    WHERE op.value LIKE '%Oracle%'
+       OR op.value LIKE '%DB2%'
+       OR op.value LIKE '%System.Data.SqlClient%'
+
+    UNION ALL
+
+    SELECT p.name, pkg.name, 'Expression Logic'
+    FROM catalog.object_parameters op
+    JOIN catalog.packages pkg ON op.object_id = pkg.package_id
+    JOIN catalog.projects p ON pkg.project_id = p.project_id
+    WHERE op.parameter_name LIKE '%Expression%'
+
+    UNION ALL
+
+    SELECT p.name, pkg.name, 'Package Store'
+    FROM catalog.packages pkg
+    JOIN catalog.projects p ON pkg.project_id = p.project_id
+    WHERE pkg.package_type = 0
+) AS Risks
+ORDER BY ProjectName, PackageName, RiskType;
