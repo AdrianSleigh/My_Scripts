@@ -1,9 +1,8 @@
-
 SET NOCOUNT ON
 --SQL Instance Report
 --Designed to collate most useful data to create report for dbas to get an instant view.	
---Written By Adrian Sleigh 09/01/26
---Version 33.0 Changed for SQ 2025 version checking
+--Written By Adrian Sleigh 29/01/26
+--Version 34.0 revised to work SQL2008
 ---------------------------------------------------------------------------
 PRINT N'📊 Generating Report...';
 SELECT
@@ -21,22 +20,35 @@ FROM
 -- ============================================================
 -- SQL Server Version Check with 2019 Baseline + Back-branch patch check
 -- ============================================================
-
 SET NOCOUNT ON;
 
--- Current version info
-DECLARE @CurrentVersion NVARCHAR(50) = CONVERT(NVARCHAR(50), SERVERPROPERTY('ProductVersion'));
-DECLARE @MajorVersion   INT          = TRY_CONVERT(INT, LEFT(@CurrentVersion, CHARINDEX('.', @CurrentVersion + '.') - 1));
+-- Current version info (2008-safe)
+DECLARE @CurrentVersion NVARCHAR(128) = CONVERT(NVARCHAR(128), SERVERPROPERTY('ProductVersion'));
+DECLARE @MajorVersion   INT;
+DECLARE @MinorVersion   INT;
+
+BEGIN TRY
+    -- Four-part version: major.minor.build.revision
+    SET @MajorVersion = CAST(PARSENAME(@CurrentVersion, 4) AS INT);
+    SET @MinorVersion = CAST(PARSENAME(@CurrentVersion, 3) AS INT);
+END TRY
+BEGIN CATCH
+    -- Conservative fallback
+    SET @MajorVersion = 10;
+    SET @MinorVersion = 0;
+END CATCH;
 
 DECLARE @VersionName   NVARCHAR(50);
 DECLARE @LatestVersion NVARCHAR(50); -- four-part version string per branch
 
--- Map major versions to friendly names & latest known builds
+/* =========================================================================
+   Map major versions to friendly names & latest known builds (static values)
+   ========================================================================= */
 
 IF @MajorVersion = 17
 BEGIN
     SET @VersionName   = N'SQL Server 2025';
-    SET @LatestVersion = N'17.0.1000.7'; -- 18/11/25 SQL Server 2025 
+    SET @LatestVersion = N'17.0.1000.7'; -- 18/11/25 SQL Server 2025
 END
 ELSE IF @MajorVersion = 16
 BEGIN
@@ -55,39 +67,43 @@ BEGIN
 END
 ELSE IF @MajorVersion = 13
 BEGIN
-    -----OUT OF SYNC VERSION CHECK 10/12/25
-    -- Branch/Track-aware handling for SQL Server 2016 (13.x)
-    -- This prevents misclassification when Microsoft ships a later-dated
-    -- GDR on SP2 with a lower build number than SP3 (e.g., 13.0.6475.1).
-    -----------------------------------------------------------------------
-    DECLARE @ProductLevel       sysname = CONVERT(sysname, SERVERPROPERTY('ProductLevel'));         -- RTM/SP1/SP2/SP3
-    DECLARE @ProductUpdateLevel sysname = CONVERT(sysname, SERVERPROPERTY('ProductUpdateLevel'));   -- CUxx or GDRxx (NULL if none)
+    /* -------------------------------------------------------------
+       Branch/Track-aware handling for SQL Server 2016 (13.x)
+       (2008-safe: no TRY_CONVERT/CONCAT/IIF)
+       ------------------------------------------------------------- */
+    DECLARE @ProductLevel       NVARCHAR(128) = CONVERT(NVARCHAR(128), SERVERPROPERTY('ProductLevel'));         -- RTM/SP1/SP2/SP3
+    DECLARE @ProductUpdateLevel NVARCHAR(128) = CONVERT(NVARCHAR(128), SERVERPROPERTY('ProductUpdateLevel'));   -- CUxx or GDRxx (NULL if none)
 
-    DECLARE @SP tinyint = CASE WHEN @ProductLevel = 'RTM' THEN 0
-                               ELSE TRY_CONVERT(tinyint, REPLACE(@ProductLevel,'SP','')) END;
-    DECLARE @Track varchar(3) = CASE WHEN @ProductUpdateLevel LIKE 'CU%' THEN 'CU' ELSE 'GDR' END;
+    DECLARE @SP TINYINT = CASE 
+                              WHEN @ProductLevel = 'RTM' THEN 0
+                              WHEN @ProductLevel LIKE 'SP%' AND ISNUMERIC(SUBSTRING(@ProductLevel, 3, 10)) = 1 
+                                   THEN CAST(SUBSTRING(@ProductLevel, 3, 10) AS TINYINT)
+                              ELSE 0
+                          END;
 
-    -- Friendly name reflects actual branch & update train
-    SET @VersionName =
-        N'SQL Server 2016' +
-        CASE WHEN @SP > 0 THEN CONCAT(' SP', @SP) ELSE N'' END +
-        CASE WHEN @ProductUpdateLevel IS NULL THEN N'' ELSE CONCAT(' ', @ProductUpdateLevel) END;
+    DECLARE @Track VARCHAR(3) = CASE 
+                                    WHEN @ProductUpdateLevel LIKE 'CU%' THEN 'CU' 
+                                    WHEN @ProductUpdateLevel LIKE 'GDR%' THEN 'GDR' 
+                                    ELSE 'GDR'  -- default to GDR if NULL/unknown
+                                END;
 
-    -- Baselines per branch/track (update these when Microsoft ships new fixes)
+    -- Build friendly name without CONCAT
+    SET @VersionName = N'SQL Server 2016'
+                       + CASE WHEN @SP > 0 THEN N' SP' + CAST(@SP AS NVARCHAR(10)) ELSE N'' END
+                       + CASE WHEN @ProductUpdateLevel IS NULL THEN N'' ELSE N' ' + @ProductUpdateLevel END;
+
+    -- Baselines per branch/track
     IF @SP = 3 AND @Track = 'GDR'
         SET @LatestVersion = N'13.0.7070.1';   -- SQL Server 2016 SP3 GDR
     ELSE IF @SP = 2 AND @Track = 'GDR'
         SET @LatestVersion = N'13.0.6475.1';   -- SQL Server 2016 SP2 GDR (Nov release)
     ELSE IF @SP = 3 AND @Track = 'CU'
-        -- If you maintain CU baselines, put the current SP3 CU here; else default to SP3 GDR
         SET @LatestVersion = N'13.0.7070.1';   -- defaulting to SP3 GDR baseline
-        -- Example: SET @LatestVersion = N'13.0.78xx.x'; -- SP3 CUx
+        -- Example CU: SET @LatestVersion = N'13.0.78xx.x'; -- SP3 CUx
     ELSE IF @SP = 2 AND @Track = 'CU'
-        -- If you maintain CU baselines, put the current SP2 CU here; else default to SP2 GDR
         SET @LatestVersion = N'13.0.6475.1';   -- defaulting to SP2 GDR baseline
-        -- Example: SET @LatestVersion = N'13.0.65xx.x'; -- SP2 CUx
+        -- Example CU: SET @LatestVersion = N'13.0.65xx.x'; -- SP2 CUx
     ELSE
-        -- Fallback: prefer highest serviced GDR you allow (keeps policy simple)
         SET @LatestVersion = N'13.0.7060.1';   -- safe default (SP3 GDR)
 END
 ELSE IF @MajorVersion = 12
@@ -102,25 +118,36 @@ BEGIN
 END
 ELSE IF @MajorVersion = 10
 BEGIN
-    SET @VersionName   = N'SQL Server 2008 R2';
-    SET @LatestVersion = N'10.50.6560.0'; -- SQL Server 2008 R2 SP3 GDR
+    -- Distinguish 2008 vs 2008 R2 by minor version (10.0 vs 10.50)
+    IF @MinorVersion >= 50
+    BEGIN
+        SET @VersionName   = N'SQL Server 2008 R2';
+        SET @LatestVersion = N'10.50.6560.0'; -- 2008 R2 SP3 GDR
+    END
+    ELSE
+    BEGIN
+        SET @VersionName   = N'SQL Server 2008';
+        SET @LatestVersion = N'10.00.6000.29'; -- Example: 2008 SP4 baseline (adjust if you track GDRs)
+    END
 END
 ELSE
 BEGIN
-    PRINT N'⚠️ POSSIBLE UNSUPPORTED/UNKNOWN VERSION: ' + ISNULL(@CurrentVersion, N'(null)');
+    PRINT N'POSSIBLE UNSUPPORTED/UNKNOWN VERSION: ' + ISNULL(@CurrentVersion, N'(null)');
     RETURN;
 END
 
--- Helper: numeric compare of four-part versions using PARSENAME
-DECLARE @cMaj INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@CurrentVersion, 4)), 0);
-DECLARE @cMin INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@CurrentVersion, 3)), 0);
-DECLARE @cBld INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@CurrentVersion, 2)), 0);
-DECLARE @cRev INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@CurrentVersion, 1)), 0);
+/* -------------------------------------------------------------
+   Helper: numeric compare of four-part versions (2008-safe)
+   ------------------------------------------------------------- */
+DECLARE @cMaj INT = CASE WHEN ISNUMERIC(PARSENAME(@CurrentVersion, 4)) = 1 THEN CAST(PARSENAME(@CurrentVersion, 4) AS INT) ELSE 0 END;
+DECLARE @cMin INT = CASE WHEN ISNUMERIC(PARSENAME(@CurrentVersion, 3)) = 1 THEN CAST(PARSENAME(@CurrentVersion, 3) AS INT) ELSE 0 END;
+DECLARE @cBld INT = CASE WHEN ISNUMERIC(PARSENAME(@CurrentVersion, 2)) = 1 THEN CAST(PARSENAME(@CurrentVersion, 2) AS INT) ELSE 0 END;
+DECLARE @cRev INT = CASE WHEN ISNUMERIC(PARSENAME(@CurrentVersion, 1)) = 1 THEN CAST(PARSENAME(@CurrentVersion, 1) AS INT) ELSE 0 END;
 
-DECLARE @lMaj INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@LatestVersion, 4)), 0);
-DECLARE @lMin INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@LatestVersion, 3)), 0);
-DECLARE @lBld INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@LatestVersion, 2)), 0);
-DECLARE @lRev INT = ISNULL(TRY_CONVERT(INT, PARSENAME(@LatestVersion, 1)), 0);
+DECLARE @lMaj INT = CASE WHEN ISNUMERIC(PARSENAME(@LatestVersion, 4)) = 1 THEN CAST(PARSENAME(@LatestVersion, 4) AS INT) ELSE 0 END;
+DECLARE @lMin INT = CASE WHEN ISNUMERIC(PARSENAME(@LatestVersion, 3)) = 1 THEN CAST(PARSENAME(@LatestVersion, 3) AS INT) ELSE 0 END;
+DECLARE @lBld INT = CASE WHEN ISNUMERIC(PARSENAME(@LatestVersion, 2)) = 1 THEN CAST(PARSENAME(@LatestVersion, 2) AS INT) ELSE 0 END;
+DECLARE @lRev INT = CASE WHEN ISNUMERIC(PARSENAME(@LatestVersion, 1)) = 1 THEN CAST(PARSENAME(@LatestVersion, 1) AS INT) ELSE 0 END;
 
 DECLARE @BranchOutdated BIT =
     CASE
@@ -134,41 +161,42 @@ DECLARE @BranchOutdated BIT =
         ELSE 0
     END;
 
--- Output base info
+/* -------------------------------------------------------------
+   Output base info
+   ------------------------------------------------------------- */
 PRINT N'Detected Version: ' + @VersionName;
 PRINT N'Current SQL Server Version: ' + @CurrentVersion;
 PRINT N'Latest Known Version (Dec 2025) for this branch: ' + @LatestVersion;
 
--- ============================================
--- Enforce baseline: SQL Server 2019 required
--- ============================================
+/* ==========================================================
+   Enforce baseline: SQL Server 2025 required (policy sample)
+   ========================================================== */
 IF @MajorVersion < 17
 BEGIN
-    PRINT N'⚠️ Upgrade to SQL Server 2025 required (baseline policy). Detected: '
+    PRINT N'Upgrade to SQL Server 2025 required per baseline policy. Detected: '
         + @VersionName + N' (' + @CurrentVersion + N')';
 
-    -- Additionally evaluate patch status only when LOWER than 2019
+    -- Additionally evaluate patch status only when lower than 2019
     IF @MajorVersion < 15
     BEGIN
         IF @BranchOutdated = 1
-            PRINT N'⚠️ Patch Required (Current Branch): Your ' + @VersionName
+            PRINT N'Patch Required (Current Branch): ' + @VersionName
                 + N' instance is not fully patched. Target at least: ' + @LatestVersion + N'.';
         ELSE
-            PRINT N' Current Branch Status: Your ' + @VersionName
-                + N' ✅ instance appears fully patched for its branch.';
+            PRINT N'Current Branch Status: ' + @VersionName
+                + N' instance appears fully patched for its branch.';
     END
 
-    RETURN; -- stop here; remove/modify if you want further actions
+    RETURN; -- stop here; modify/remove as needed
 END
 
--- ============================================
--- Only for SQL Server 2019: evaluate patch status
--- ============================================
+/* ==========================================================
+   Only for SQL Server 2019+ here: evaluate patch status
+   ========================================================== */
 IF @BranchOutdated = 1
-    PRINT N'⚠️ UPDATE REQUIRED: Your SQL Server instance is not fully patched. Target: ' + @LatestVersion + N'.';
+    PRINT N'UPDATE REQUIRED: Instance is not fully patched. Target: ' + @LatestVersion + N'.';
 ELSE
-    PRINT N'✅ Up to Date: Your SQL Server instance appears to be on the latest patch.';
-GO
+    PRINT N'Up to Date: Instance appears to be on the latest patch.';
 --------------------------------------------------------------
 ---latest version 22/09/25
 ------------------------------------------------------------------
@@ -266,15 +294,48 @@ SELECT col2 AS PROCESSOR FROM #temp_cpu
 
 DROP TABLE #temp_cpu
 
---GET SERVER MEMORY
-PRINT 'SERVER MEMORY ALLOCATED'
-SELECT 
-      cpu_count,
-      hyperthread_ratio,
-      [physical_memory_kb]/1024 AS 'Server_Memory_MB',
-      [committed_kb]/1024 AS 'Used_for_SQL_MB',
-      [committed_target_kb]/1024 AS 'Allocated_Max_Memory_SQL_MB'
-          FROM sys.dm_os_sys_info
+-- SERVER MEMORY ALLOCATED (SQL Server 2008 → 2025 safe)
+PRINT 'SERVER MEMORY ALLOCATED';
+
+DECLARE @sumExpr NVARCHAR(200);
+DECLARE @sql     NVARCHAR(MAX);
+
+-- Decide how to sum SQL memory depending on version/columns
+IF COL_LENGTH('sys.dm_os_memory_clerks', 'pages_kb') IS NOT NULL
+BEGIN
+    -- 2012+ path
+    SET @sumExpr = N'SUM(pages_kb) / 1024';
+END
+ELSE
+BEGIN
+    -- 2008 / 2008 R2 path
+    -- Use COALESCE to be defensive across builds
+    SET @sumExpr = N'SUM(COALESCE(single_pages_kb,0) + COALESCE(multi_pages_kb,0)) / 1024';
+END
+
+-- Build the full query using the selected expression
+SET @sql = N'
+SELECT
+    si.cpu_count,
+    si.hyperthread_ratio,
+    sm.total_physical_memory_kb / 1024 AS Server_Memory_MB,
+    mc.used_for_sql_mb,
+    cfg.max_server_memory_mb AS Allocated_Max_Memory_SQL_MB
+FROM sys.dm_os_sys_info AS si
+CROSS JOIN sys.dm_os_sys_memory AS sm
+CROSS APPLY (
+    SELECT ' + @sumExpr + N' AS used_for_sql_mb
+    FROM sys.dm_os_memory_clerks
+) AS mc
+CROSS APPLY (
+    SELECT CAST(value_in_use AS INT) AS max_server_memory_mb
+    FROM sys.configurations
+    WHERE name = ''max server memory (MB)''
+) AS cfg;
+';
+
+EXEC (@sql);
+
 
 ------------------------------------
 ---CHECK MEMORY SETTINGS 16/09/25 revised version
@@ -292,7 +353,7 @@ DECLARE @MemoryDiffPercent DECIMAL(18,2);
 -- Detect SSIS
 IF EXISTS (
     SELECT 1
-    FROM sysdatabases
+    FROM sys.databases
     WHERE [name] LIKE '%SSISDB%'
 )
     SET @SSISPresent = 1;
@@ -300,7 +361,7 @@ IF EXISTS (
 -- Detect SSRS
 IF EXISTS (
     SELECT 1
-    FROM sysdatabases
+    FROM sys.databases
     WHERE [name] LIKE '%ReportServer%'
 )
     SET @SSRSPresent = 1;
@@ -516,10 +577,23 @@ END
 
 ---GET EXTENDED EVENT LIST
 ----------------------------------
-SELECT SUBSTRING(name,1,60) AS ExtendedEventName, 
-       event_session_id, 
-       startup_state 
-FROM sys.server_event_sessions;
+PRINT 'EXTENDED EVENT LIST';
+
+IF OBJECT_ID('sys.server_event_sessions') IS NOT NULL
+BEGIN
+    EXEC(N'
+        SELECT 
+            SUBSTRING(name, 1, 60) AS ExtendedEventName,
+            event_session_id,
+            startup_state
+        FROM sys.server_event_sessions;
+    ');
+END
+ELSE
+BEGIN
+    PRINT N'⚠️ Extended Events are not supported on this SQL Server version (skipped).';
+END
+
 ----------------------------------
 --GET LINKED SERVER INFO
 PRINT 'LINKED SERVER CONNECTIONS'
@@ -873,30 +947,59 @@ END
 ----------------------------------------------------------------------------
 --CHECK FOR HALLENGREN DEPLOYED SCRIPTS -VERSION
 -- Multi-Database Ola Hallengren Feature Detection and Version Estimator
+SET NOCOUNT ON;
 
-PRINT N'⏳ Scanning all user databases for Ola Hallengren procedures...';
-SET NOCOUNT ON
+PRINT 'Scanning all user databases for Ola Hallengren procedures...';
+
 -- Temp tables
-IF OBJECT_ID('tempdb..##FeatureCheck') IS NOT NULL DROP TABLE ##FeatureCheck;
-CREATE TABLE ##FeatureCheck (
+IF OBJECT_ID('tempdb..#FeatureCheck') IS NOT NULL DROP TABLE #FeatureCheck;
+CREATE TABLE #FeatureCheck (
     DatabaseName NVARCHAR(128),
     Feature NVARCHAR(200),
     Year INT,
     Found BIT
 );
 
+IF OBJECT_ID('tempdb..#DbList') IS NOT NULL DROP TABLE #DbList;
+CREATE TABLE #DbList (name NVARCHAR(128) NOT NULL);
+
 DECLARE @DatabaseName3 NVARCHAR(128);
 DECLARE @HasAnyOla BIT = 0;
 
--- Cursor to loop through user databases (excluding system and secondaries)
+---------------------------------------------------------------------------
+-- Build database list safely across versions
+-- - Use AG metadata only when both DMV and column exist
+-- - Else fallback to ONLINE, non-system databases
+---------------------------------------------------------------------------
+IF OBJECT_ID('sys.dm_hadr_availability_replica_states') IS NOT NULL
+   AND COL_LENGTH('sys.databases', 'replica_id') IS NOT NULL
+BEGIN
+    -- Availability Groups path (SQL Server 2012+)
+    EXEC sp_executesql N'
+        INSERT INTO #DbList(name)
+        SELECT d.name
+        FROM sys.databases AS d
+        LEFT JOIN sys.dm_hadr_availability_replica_states AS rs
+              ON d.replica_id = rs.replica_id
+        WHERE d.state_desc = ''ONLINE''
+          AND d.name NOT IN (''master'', ''model'', ''msdb'', ''tempdb'')
+          AND (d.replica_id IS NULL OR rs.role_desc = ''PRIMARY'');';
+END
+ELSE
+BEGIN
+    -- Legacy / non-AG path (SQL Server 2008, or AG not used)
+    INSERT INTO #DbList(name)
+    SELECT d.name
+    FROM sys.databases AS d
+    WHERE d.state_desc = 'ONLINE'
+      AND d.name NOT IN ('master', 'model', 'msdb', 'tempdb');
+END
+
+---------------------------------------------------------------------------
+-- Cursor to loop through databases from #DbList (safe on 2008)
+---------------------------------------------------------------------------
 DECLARE db_cursor CURSOR FOR
-SELECT d.name
-FROM sys.databases d
-LEFT JOIN sys.dm_hadr_availability_replica_states rs
-    ON d.replica_id = rs.replica_id
-WHERE d.state_desc = 'ONLINE'
-  AND d.name NOT IN ('master', 'model', 'msdb', 'tempdb')
-  AND (d.replica_id IS NULL OR rs.role_desc = 'PRIMARY');
+    SELECT name FROM #DbList;
 
 OPEN db_cursor;
 FETCH NEXT FROM db_cursor INTO @DatabaseName3;
@@ -907,21 +1010,16 @@ BEGIN
     DECLARE @HasOla BIT = 0;
 
     -- Check for Ola procedures in this database
-    SET @CheckSQL = '
-    USE ' + QUOTENAME(@DatabaseName3) + ';
+    SET @CheckSQL = N'
+    USE ' + QUOTENAME(@DatabaseName3) + N';
     IF EXISTS (
         SELECT 1 FROM sys.objects 
         WHERE name IN (''DatabaseBackup'', ''IndexOptimize'', ''CommandExecute'')
-        AND type = ''P''
+          AND type = ''P''
     )
-    BEGIN
         SELECT @HasOlaOut = 1;
-    END
     ELSE
-    BEGIN
-        SELECT @HasOlaOut = 0;
-    END
-    ';
+        SELECT @HasOlaOut = 0;';
 
     EXEC sp_executesql @CheckSQL, N'@HasOlaOut BIT OUTPUT', @HasOlaOut = @HasOla OUTPUT;
 
@@ -932,23 +1030,25 @@ BEGIN
         DECLARE @Feature NVARCHAR(200), @Year INT, @Pattern NVARCHAR(MAX);
         DECLARE @SQL3 NVARCHAR(MAX), @Found BIT;
 
+        -- Feature patterns to detect approximate vintage
         DECLARE FeatureCursor CURSOR FOR
-        SELECT * FROM (
+        SELECT Feature, Year, Pattern
+        FROM (
             VALUES
-            ('@CleanupTime', 2019, '%@CleanupTime%'),
-            ('@DirectoryStructure', 2020, '%@DirectoryStructure%'),
-            ('@LogToTable with CommandType', 2021, '%@LogToTable%CommandType%'),
-            ('@Credential for Azure/S3', 2022, '%@Credential%TO URL%'),
-            ('@CompressionLevelNumeric', 2022, '%@CompressionLevelNumeric%'),
-            ('COPY_ONLY with AG awareness', 2022, '%COPY_ONLY%AvailabilityGroup%'),
-            ('@AvailabilityGroupReplicas = ALL', 2023, '%@AvailabilityGroupReplicas%ALL%'),
-            ('@URL and @MirrorURL for S3', 2023, '%@URL%@MirrorURL%'),
-            ('@Resumable = Y', 2024, '%@Resumable%RESUMABLE = ON%'),
-            ('Filtered index support with @Resumable', 2024, '%filtered%@Resumable%'),
-            ('Always On awareness in CommandExecute', 2024, '%dm_hadr_availability_replica_states%'),
-            ('@CompressionLevel and ZSTD', 2025, '%@CompressionLevel%ZSTD%'),
-            ('sys.dm_os_file_exists usage', 2025, '%sys.dm_os_file_exists%'),
-            ('EXPIREDATE and RETAINDAYS', 2025, '%EXPIREDATE%RETAINDAYS%')
+            (N'@CleanupTime',                           2019, N'%@CleanupTime%'),
+            (N'@DirectoryStructure',                    2020, N'%@DirectoryStructure%'),
+            (N'@LogToTable with CommandType',           2021, N'%@LogToTable%CommandType%'),
+            (N'@Credential for Azure/S3',               2022, N'%@Credential%TO URL%'),
+            (N'@CompressionLevelNumeric',               2022, N'%@CompressionLevelNumeric%'),
+            (N'COPY_ONLY with AG awareness',            2022, N'%COPY_ONLY%AvailabilityGroup%'),
+            (N'@AvailabilityGroupReplicas = ALL',       2023, N'%@AvailabilityGroupReplicas%ALL%'),
+            (N'@URL and @MirrorURL for S3',             2023, N'%@URL%@MirrorURL%'),
+            (N'@Resumable = Y',                         2024, N'%@Resumable%RESUMABLE = ON%'),
+            (N'Filtered index support with @Resumable', 2024, N'%filtered%@Resumable%'),
+            (N'Always On awareness in CommandExecute',  2024, N'%dm_hadr_availability_replica_states%'),
+            (N'@CompressionLevel and ZSTD',             2025, N'%@CompressionLevel%ZSTD%'),
+            (N'sys.dm_os_file_exists usage',            2025, N'%sys.dm_os_file_exists%'),
+            (N'EXPIREDATE and RETAINDAYS',              2025, N'%EXPIREDATE%RETAINDAYS%')
         ) AS Features(Feature, Year, Pattern);
 
         OPEN FeatureCursor;
@@ -956,18 +1056,19 @@ BEGIN
 
         WHILE @@FETCH_STATUS = 0
         BEGIN
-            SET @SQL3 = '
-            USE ' + QUOTENAME(@DatabaseName3) + ';
+            SET @SQL3 = N'
+            USE ' + QUOTENAME(@DatabaseName3) + N';
             SELECT @FoundOut = CASE WHEN EXISTS (
-                SELECT 1 FROM sys.sql_modules 
+                SELECT 1 
+                FROM sys.sql_modules 
                 WHERE definition LIKE @Pattern
-            ) THEN 1 ELSE 0 END';
+            ) THEN 1 ELSE 0 END;';
 
             EXEC sp_executesql @SQL3, 
                 N'@Pattern NVARCHAR(MAX), @FoundOut BIT OUTPUT', 
                 @Pattern = @Pattern, @FoundOut = @Found OUTPUT;
 
-            INSERT INTO ##FeatureCheck (DatabaseName, Feature, Year, Found)
+            INSERT INTO #FeatureCheck (DatabaseName, Feature, Year, Found)
             VALUES (@DatabaseName3, @Feature, @Year, @Found);
 
             FETCH NEXT FROM FeatureCursor INTO @Feature, @Year, @Pattern;
@@ -983,31 +1084,34 @@ END
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
 
+---------------------------------------------------------------------------
 -- Output results
-IF EXISTS (SELECT 1 FROM ##FeatureCheck)
+---------------------------------------------------------------------------
+IF EXISTS (SELECT 1 FROM #FeatureCheck)
 BEGIN
     PRINT 'Feature Detection Results:';
     SELECT 
-        SUBSTRING(DatabaseName,1,50)AS DatabaseName,
+        SUBSTRING(DatabaseName, 1, 50) AS DatabaseName,
         Year,
-        SUBSTRING(Feature,1,30)AS Feature,
+        SUBSTRING(Feature, 1, 30) AS Feature,
         CASE WHEN Found = 1 THEN 'Present' ELSE 'Not Found' END AS Status
-    FROM ##FeatureCheck
+    FROM #FeatureCheck
     ORDER BY DatabaseName, Year, Feature;
 
     PRINT 'Estimated Ola Hallengren version per database:';
     SELECT 
-        SUBSTRING(DatabaseName,1,50)AS DatabaseName,
+        SUBSTRING(DatabaseName, 1, 50) AS DatabaseName,
         MAX(Year) AS EstimatedVersionYear
-    FROM ##FeatureCheck
+    FROM #FeatureCheck
     WHERE Found = 1
     GROUP BY DatabaseName
     ORDER BY DatabaseName;
 END
 ELSE
 BEGIN
-    PRINT N'⛔ NO OLA HALLENGREN SCRIPTS PRESENT IN ANY DATABASE.';
+    PRINT 'NO OLA HALLENGREN SCRIPTS PRESENT IN ANY DATABASE.';
 END
+
 --------------------------------------------------------------------------
 --GET REPLICATION ROLE
 ------------------------------------------
@@ -1056,54 +1160,119 @@ BEGIN CATCH
 END CATCH;
 -------------------------------------------------------------------
 -----------------------------------------------------------         
---GET CLUSTER INFO
-IF SERVERPROPERTY('IsClustered') = 1
+SET NOCOUNT ON;
+
+PRINT 'GET CLUSTER INFO';
+
+IF CONVERT(INT, SERVERPROPERTY('IsClustered')) = 1
 BEGIN
     PRINT 'CLUSTERED INSTANCE';
+
+    -- Always show basic identity
     SELECT 
-      SUBSTRING(NodeName, 1, 60) AS NodeName,
-      status,
-      status_description,
-      is_current_owner
-    FROM sys.dm_os_cluster_nodes;
+        CAST(SERVERPROPERTY('ServerName') AS nvarchar(256))                 AS ServerName,
+        CAST(SERVERPROPERTY('MachineName') AS nvarchar(256))                AS MachineName,
+        CAST(SERVERPROPERTY('ComputerNamePhysicalNetBIOS') AS nvarchar(256)) AS ComputerNamePhysicalNetBIOS,
+        CAST(SERVERPROPERTY('InstanceName') AS nvarchar(256))               AS InstanceName;
+
+    -- Only attempt DMV if it exists
+    IF OBJECT_ID('sys.dm_os_cluster_nodes') IS NOT NULL
+    BEGIN
+        DECLARE @sql NVARCHAR(MAX);
+
+        -- Decide which node-name column exists: 2008 uses 'NodeName', 2012+ uses 'node_name'
+        IF COL_LENGTH('sys.dm_os_cluster_nodes', 'node_name') IS NOT NULL
+        BEGIN
+            -- 2012+ shape
+            SET @sql = N'
+                SELECT 
+                    SUBSTRING(node_name, 1, 60) AS NodeName,
+                    status,
+                    status_description,
+                    is_current_owner
+                FROM sys.dm_os_cluster_nodes;';
+        END
+        ELSE IF COL_LENGTH('sys.dm_os_cluster_nodes', 'NodeName') IS NOT NULL
+        BEGIN
+            -- 2008/2008 R2 shape
+            SET @sql = N'
+                SELECT 
+                    SUBSTRING(NodeName, 1, 60) AS NodeName,
+                    status,
+                    status_description,
+                    is_current_owner
+                FROM sys.dm_os_cluster_nodes;';
+        END
+        ELSE
+        BEGIN
+            -- Unexpected shape: just select everything as a fallback
+            SET @sql = N'SELECT * FROM sys.dm_os_cluster_nodes;';
+        END
+
+        BEGIN TRY
+            EXEC (@sql);
+        END TRY
+        BEGIN CATCH
+            PRINT 'Cluster detected but unable to query sys.dm_os_cluster_nodes: ' + ISNULL(ERROR_MESSAGE(), 'unknown error');
+        END CATCH
+    END
+    ELSE
+    BEGIN
+        PRINT 'Cluster detected but sys.dm_os_cluster_nodes not available on this version/edition.';
+    END
 END
 ELSE
 BEGIN
-    PRINT N'⛔ NOT A CLUSTERED INSTANCE';
+    PRINT 'NOT A CLUSTERED INSTANCE';
+    SELECT 
+        CAST(SERVERPROPERTY('ServerName') AS nvarchar(256))                 AS ServerName,
+        CAST(SERVERPROPERTY('MachineName') AS nvarchar(256))                AS MachineName,
+        CAST(SERVERPROPERTY('ComputerNamePhysicalNetBIOS') AS nvarchar(256)) AS ComputerNamePhysicalNetBIOS,
+        CAST(SERVERPROPERTY('InstanceName') AS nvarchar(256))               AS InstanceName;
 END
 ---------------------------------------------------
 --GET AVAILABILITY GROUP INFO
+SET NOCOUNT ON;
 
-IF EXISTS (
-    SELECT 1 FROM master.sys.availability_groups
-)
+PRINT 'GET AVAILABILITY GROUP INFO';
+
+IF OBJECT_ID('master.sys.availability_groups') IS NOT NULL
 BEGIN
     PRINT 'ALWAYS ON AVAILABILITY GROUP PRESENT';
 
-    SELECT
-        SUBSTRING(AG.name,1,30) AS [AvailabilityGroupName],
-        ISNULL(arstates.role, 3) AS [LocalReplicaRole],
-        SUBSTRING(dbcs.database_name,1,50) AS [DatabaseName],
-        ISNULL(dbrs.synchronization_state, 0) AS [SynchronizationState],
-        ISNULL(dbrs.is_suspended, 0) AS [IsSuspended],
-        ISNULL(dbcs.is_database_joined, 0) AS [IsJoined]
-    FROM master.sys.availability_groups AS AG
-    LEFT OUTER JOIN master.sys.dm_hadr_availability_group_states AS agstates
-        ON AG.group_id = agstates.group_id
-    INNER JOIN master.sys.availability_replicas AS AR
-        ON AG.group_id = AR.group_id
-    INNER JOIN master.sys.dm_hadr_availability_replica_states AS arstates
-        ON AR.replica_id = arstates.replica_id AND arstates.is_local = 1
-    INNER JOIN master.sys.dm_hadr_database_replica_cluster_states AS dbcs
-        ON arstates.replica_id = dbcs.replica_id
-    LEFT OUTER JOIN master.sys.dm_hadr_database_replica_states AS dbrs
-        ON dbcs.replica_id = dbrs.replica_id AND dbcs.group_database_id = dbrs.group_database_id
-    ORDER BY AG.name ASC, dbcs.database_name;
+    BEGIN TRY
+        EXEC(N'
+            SELECT
+                SUBSTRING(AG.name, 1, 30) AS [AvailabilityGroupName],
+                ISNULL(arstates.role, 3) AS [LocalReplicaRole],
+                SUBSTRING(dbcs.database_name, 1, 50) AS [DatabaseName],
+                ISNULL(dbrs.synchronization_state, 0) AS [SynchronizationState],
+                ISNULL(dbrs.is_suspended, 0) AS [IsSuspended],
+                ISNULL(dbcs.is_database_joined, 0) AS [IsJoined]
+            FROM master.sys.availability_groups AS AG
+            LEFT OUTER JOIN master.sys.dm_hadr_availability_group_states AS agstates
+                ON AG.group_id = agstates.group_id
+            INNER JOIN master.sys.availability_replicas AS AR
+                ON AG.group_id = AR.group_id
+            INNER JOIN master.sys.dm_hadr_availability_replica_states AS arstates
+                ON AR.replica_id = arstates.replica_id AND arstates.is_local = 1
+            INNER JOIN master.sys.dm_hadr_database_replica_cluster_states AS dbcs
+                ON arstates.replica_id = dbcs.replica_id
+            LEFT OUTER JOIN master.sys.dm_hadr_database_replica_states AS dbrs
+                ON dbcs.replica_id = dbrs.replica_id AND dbcs.group_database_id = dbrs.group_database_id
+            ORDER BY AG.name ASC, dbcs.database_name;
+        ');
+    END TRY
+    BEGIN CATCH
+        -- If user lacks VIEW SERVER STATE or objects are restricted, keep the script alive
+        PRINT 'AG detected but failed to query AG metadata: ' + ISNULL(ERROR_MESSAGE(), 'unknown error');
+    END CATCH
 END
 ELSE
 BEGIN
     PRINT N'⛔ NO ALWAYS ON AVAILABILITY GROUP PRESENT';
 END
+
 ----------------------------------------------------
 ---GET MIRRORED DATABASES
 -- Check for mirrored databases
@@ -1281,86 +1450,134 @@ GO
 
 --------------------------------------------------
 --GET ENCRYPTION KEY DATES
-SET NOCOUNT ON
+--------------------------------------------------
+-- GET ENCRYPTION KEY DATES (SQL 2008 → 2025 safe)
+--------------------------------------------------
+SET NOCOUNT ON;
+
 DECLARE @DBName NVARCHAR(128);
-DECLARE @SQL NVARCHAR(MAX);
+DECLARE @SQL    NVARCHAR(MAX);
 
--- Step 1: Create temp table with AG role info
+-- 1) Build db list with primary/non-AG flag into a local temp table
 IF OBJECT_ID('tempdb..#db_roles') IS NOT NULL DROP TABLE #db_roles;
+CREATE TABLE #db_roles
+(
+    DatabaseName        NVARCHAR(128) NOT NULL,
+    is_primary_replica  INT           NOT NULL  -- 1=Primary, 0=Secondary, -1=Not in AG/Mirroring
+);
 
-SELECT 
-    d.name AS DatabaseName,
-    CASE 
-        WHEN drs.is_primary_replica = 1 THEN 1
-        WHEN drs.is_primary_replica = 0 THEN 0
-        ELSE -1 -- Not in AG
-    END AS is_primary_replica
-INTO #db_roles
-FROM sys.databases d
-LEFT JOIN sys.dm_hadr_database_replica_states drs 
-    ON d.database_id = drs.database_id
-WHERE d.state_desc = 'ONLINE'
-  AND d.name NOT IN ('master', 'model', 'msdb', 'tempdb', 'SSISDB'); -- exclude system DBs
+PRINT 'CHECKING FOR ENCRYPTION KEYS';
 
--- Step 2: Cursor to loop through only primary or non-AG databases
-DECLARE db_cursor CURSOR FOR
-SELECT DatabaseName
-FROM #db_roles
-WHERE is_primary_replica IN (1, -1); -- primary or not in AG
-PRINT 'CHECKING FOR ENCRYPTION KEYS'
+-- Prefer AG metadata if present (SQL 2012+); otherwise use Database Mirroring info (2008/R2) or plain list
+IF OBJECT_ID('master.sys.dm_hadr_database_replica_states') IS NOT NULL
+BEGIN
+    -- AG path (use dynamic SQL to avoid compile errors on older versions)
+    BEGIN TRY
+        EXEC sp_executesql N'
+            INSERT INTO #db_roles (DatabaseName, is_primary_replica)
+            SELECT 
+                d.name,
+                CASE WHEN drs.is_primary_replica = 1 THEN 1 ELSE 0 END
+            FROM sys.databases AS d
+            LEFT JOIN master.sys.dm_hadr_database_replica_states AS drs
+                ON d.database_id = drs.database_id
+               AND drs.is_local = 1
+            WHERE d.state_desc = ''ONLINE''
+              AND d.name NOT IN (''master'',''model'',''msdb'',''tempdb'',''SSISDB'');
+        ';
+    END TRY
+    BEGIN CATCH
+        PRINT 'AG metadata present but failed to populate #db_roles: ' + ISNULL(ERROR_MESSAGE(), 'unknown error');
+        -- Fallback to non-AG list if something goes wrong
+        INSERT INTO #db_roles (DatabaseName, is_primary_replica)
+        SELECT d.name, -1
+        FROM sys.databases AS d
+        WHERE d.state_desc = 'ONLINE'
+          AND d.name NOT IN ('master','model','msdb','tempdb','SSISDB');
+    END CATCH
+END
+ELSE
+BEGIN
+    -- Legacy / non-AG path (SQL 2008/2008 R2 or servers without AG)
+    -- Use Database Mirroring role when present to skip mirror secondaries
+    INSERT INTO #db_roles (DatabaseName, is_primary_replica)
+    SELECT 
+        d.name,
+        CASE 
+            WHEN dm.mirroring_guid IS NOT NULL AND dm.mirroring_role = 1 THEN 1  -- PRINCIPAL
+            WHEN dm.mirroring_guid IS NOT NULL AND dm.mirroring_role = 2 THEN 0  -- MIRROR
+            ELSE -1 -- not mirrored
+        END
+    FROM sys.databases AS d
+    LEFT JOIN sys.database_mirroring AS dm
+        ON dm.database_id = d.database_id
+    WHERE d.state_desc = 'ONLINE'
+      AND d.name NOT IN ('master','model','msdb','tempdb','SSISDB');
+END
+
+-- 2) Loop only primary or non-AG/mirroring databases
+DECLARE db_cursor CURSOR LOCAL FAST_FORWARD FOR
+    SELECT DatabaseName
+    FROM #db_roles
+    WHERE is_primary_replica IN (1, -1);
+
 OPEN db_cursor;
 FETCH NEXT FROM db_cursor INTO @DBName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    PRINT N'⏳ Checking database: ' + QUOTENAME(@DBName);
+    PRINT 'Checking database: ' + QUOTENAME(@DBName);
 
-    SET @SQL = '
-    USE ' + QUOTENAME(@DBName) + ';
-    DECLARE @HasKeys BIT = 0;
-
-    IF EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = ''##MS_DatabaseMasterKey##'')
-        SET @HasKeys = 1;
-
-    IF EXISTS (SELECT 1 FROM sys.asymmetric_keys)
-        SET @HasKeys = 1;
-
-    IF EXISTS (SELECT 1 FROM sys.certificates WHERE name NOT LIKE ''##MS_%'')
-        SET @HasKeys = 1;
-
-    IF EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name NOT LIKE ''##MS_%'')
-        SET @HasKeys = 1;
-
-    IF @HasKeys = 1
-    BEGIN
-        PRINT ''--- Encryption Keys Found in ' + @DBName + ' ---'';
+    SET @SQL = N'
+        USE ' + QUOTENAME(@DBName) + N';
+        DECLARE @HasKeys BIT = 0;
 
         IF EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = ''##MS_DatabaseMasterKey##'')
-            PRINT ''Database Master Key is present.'';
+            SET @HasKeys = 1;
 
         IF EXISTS (SELECT 1 FROM sys.asymmetric_keys)
-        BEGIN
-            PRINT ''Asymmetric Keys:'';
-            SELECT name, algorithm_desc, key_length FROM sys.asymmetric_keys;
-        END
+            SET @HasKeys = 1;
 
         IF EXISTS (SELECT 1 FROM sys.certificates WHERE name NOT LIKE ''##MS_%'')
-        BEGIN
-            PRINT ''Certificates:'';
-            SELECT name, subject, expiry_date FROM sys.certificates WHERE name NOT LIKE ''##MS_%'';
-        END
+            SET @HasKeys = 1;
 
         IF EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name NOT LIKE ''##MS_%'')
+            SET @HasKeys = 1;
+
+        IF @HasKeys = 1
         BEGIN
-            PRINT ''Symmetric Keys:'';
-            SELECT name, key_guid, algorithm_desc FROM sys.symmetric_keys WHERE name NOT LIKE ''##MS_%'';
+            PRINT ''--- Encryption Keys Found in ' + @DBName + ' ---'';
+
+            IF EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = ''##MS_DatabaseMasterKey##'')
+                PRINT ''Database Master Key is present.'';
+
+            IF EXISTS (SELECT 1 FROM sys.asymmetric_keys)
+            BEGIN
+                PRINT ''Asymmetric Keys:'';
+                SELECT name, algorithm_desc, key_length
+                FROM sys.asymmetric_keys;
+            END
+
+            IF EXISTS (SELECT 1 FROM sys.certificates WHERE name NOT LIKE ''##MS_%'')
+            BEGIN
+                PRINT ''Certificates:'';
+                SELECT name, subject, expiry_date
+                FROM sys.certificates
+                WHERE name NOT LIKE ''##MS_%'';
+            END
+
+            IF EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name NOT LIKE ''##MS_%'')
+            BEGIN
+                PRINT ''Symmetric Keys:'';
+                SELECT name, key_guid, algorithm_desc
+                FROM sys.symmetric_keys
+                WHERE name NOT LIKE ''##MS_%'';
+            END
         END
-    END
-    ELSE
-    BEGIN
-        PRINT ''NO ENCRYPTION KEYS PRESENT in ' + @DBName + ''';
-    END
-    ';
+        ELSE
+        BEGIN
+            PRINT ''NO ENCRYPTION KEYS PRESENT in ' + @DBName + ''';
+        END';
 
     BEGIN TRY
         EXEC sp_executesql @SQL;
@@ -1377,7 +1594,7 @@ DEALLOCATE db_cursor;
 
 -- Cleanup
 DROP TABLE #db_roles;
-
+-------------------------------------------------
 ---GET FILE INFO
 PRINT 'FILE INFORMATION' 
 PRINT '----------------'
@@ -1450,47 +1667,62 @@ WHERE files.type_desc = 'ROWS'
 
 ----------------------------------------------------
 -- Check SSRS Account
-IF EXISTS (
-    SELECT 1
-    FROM sys.dm_hadr_availability_replica_states ars
-    JOIN sys.availability_replicas ar ON ars.replica_id = ar.replica_id
-    WHERE ars.role_desc = 'PRIMARY'
-      AND ar.replica_server_name = @@SERVERNAME
-)
-BEGIN
-    PRINT 'Running on PRIMARY. Proceeding with script...';
-
-/* ================================================================
-   Identify SSRS gMSA via ReportServer DB permissions
-   - Searches all ReportServer* DBs (excludes *TempDB)
-   - Looks for membership in RSExecRole and/or db_owner
-   - Returns only principals that look like gMSA (name ends with $)
-   - If none found, prints "SSRS likely using a system account"
-   Requirements: Typically sysadmin (or rights to read DB metadata)
-   ================================================================*/
 SET NOCOUNT ON;
 
--- 1) Collect ReportServer DBs (exclude TempDBs)
+PRINT 'CHECK SSRS ACCOUNT';
+
+------------------------------------------------------------
+-- 1) Determine if we are PRIMARY (AG) safely across versions
+------------------------------------------------------------
+DECLARE @IsPrimary BIT = 1; -- default: treat as primary when AG not present (2008/Non-AG)
+
+IF OBJECT_ID('master.sys.dm_hadr_availability_replica_states') IS NOT NULL
+   AND OBJECT_ID('master.sys.availability_replicas') IS NOT NULL
+BEGIN
+    DECLARE @sqlAG NVARCHAR(MAX) = N'
+        SELECT @out = CASE WHEN EXISTS(
+            SELECT 1
+            FROM master.sys.dm_hadr_availability_replica_states AS ars
+            INNER JOIN master.sys.availability_replicas AS ar
+                ON ars.replica_id = ar.replica_id
+            WHERE ars.is_local = 1
+              AND ars.role_desc = ''PRIMARY''
+              AND ar.replica_server_name = @@SERVERNAME
+        ) THEN 1 ELSE 0 END;';
+    EXEC sp_executesql @sqlAG, N'@out BIT OUTPUT', @out = @IsPrimary OUTPUT;
+END
+
+IF @IsPrimary = 0
+BEGIN
+    PRINT 'Running on SECONDARY (AG). Skipping SSRS account detection.';
+    RETURN; -- remove if you want to continue the rest of your report
+END
+
+PRINT 'Running on PRIMARY (or non-AG). Proceeding...';
+
+------------------------------------------------------------
+-- 2) Collect ReportServer DBs (exclude TempDB variants)
+------------------------------------------------------------
 IF OBJECT_ID('tempdb..#RSDBs') IS NOT NULL DROP TABLE #RSDBs;
 CREATE TABLE #RSDBs (DBName SYSNAME PRIMARY KEY);
 
 INSERT INTO #RSDBs(DBName)
-SELECT name
-FROM sys.databases
-
-
-
-WHERE name LIKE N'ReportServer%' 
-  AND name NOT LIKE N'%TempDB'
-  AND state_desc = N'ONLINE' ;
+SELECT d.name
+FROM sys.databases AS d
+WHERE d.name LIKE N'ReportServer%'         -- ReportServer or ReportServer$Instance
+  AND d.name NOT LIKE N'%TempDB'           -- exclude ReportServerTempDB
+  AND d.state_desc = N'ONLINE';
 
 IF NOT EXISTS (SELECT 1 FROM #RSDBs)
 BEGIN
-    PRINT N'⛔ No ReportServer database found on this instance.';
-    RETURN;
+    PRINT 'No ReportServer database found on this instance.';
+    -- Do not RETURN the whole script unless you want to stop all remaining sections:
+    -- RETURN;
 END
 
--- 2) Holder for gMSA findings across all RS DBs
+------------------------------------------------------------
+-- 3) Holder for gMSA findings across all RS DBs
+------------------------------------------------------------
 IF OBJECT_ID('tempdb..#FoundGmsa') IS NOT NULL DROP TABLE #FoundGmsa;
 CREATE TABLE #FoundGmsa
 (
@@ -1500,7 +1732,9 @@ CREATE TABLE #FoundGmsa
     PrincipalType NVARCHAR(128)   NULL
 );
 
--- 3) Iterate RS DBs and pull role membership; filter to gMSA (ends with $)
+------------------------------------------------------------
+-- 4) Iterate RS DBs and pull role membership; filter to gMSA (ends with $)
+------------------------------------------------------------
 DECLARE @db SYSNAME, @sql NVARCHAR(MAX);
 
 DECLARE dbs CURSOR LOCAL FAST_FORWARD FOR
@@ -1534,14 +1768,14 @@ Mapped AS
     SELECT 
         rm.DatabaseUser,
         rm.RoleName,
-        -- Collate both sides to the database default collation
+        -- Map to server principal by SID when possible; collate defensively
         COALESCE(
             sp.name COLLATE DATABASE_DEFAULT,
             rm.DatabaseUser COLLATE DATABASE_DEFAULT
         ) AS PrincipalName,
         COALESCE(sp.type_desc, rm.DbPrincipalType) AS PrincipalType
-    FROM RoleMembers rm
-    LEFT JOIN sys.server_principals sp
+    FROM RoleMembers AS rm
+    LEFT JOIN sys.server_principals AS sp
       ON sp.sid = rm.DbSid
      AND rm.DbSid IS NOT NULL
      AND rm.DbSid <> 0x00
@@ -1554,6 +1788,7 @@ SELECT
 FROM Mapped AS M
 WHERE M.PrincipalName LIKE N''%$''; -- gMSA pattern (DOMAIN\name$)
 ';
+
     INSERT INTO #FoundGmsa (DBName, GmsaAccount, RoleName, PrincipalType)
     EXEC (@sql);
 
@@ -1563,32 +1798,30 @@ END
 CLOSE dbs;
 DEALLOCATE dbs;
 
--- 4) Output gMSA or print system-account hint
+------------------------------------------------------------
+-- 5) Output results or system-account hint
+------------------------------------------------------------
 IF EXISTS (SELECT 1 FROM #FoundGmsa)
 BEGIN
-PRINT N'SSRS ACCOUNT'
+    PRINT 'SSRS ACCOUNT';
     SELECT DISTINCT 
-        SUBSTRING(DBName,1,50)AS DbName,
-        SUBSTRING(GmsaAccount,1,20)  AS SSRS_gMSA_Account,
-        SUBSTRING(RoleName,1,20) AS RoleName,
-        SUBSTRING(PrincipalType,1,20) AS PrincipalType
+        SUBSTRING(DBName, 1, 50)      AS DbName,
+        SUBSTRING(GmsaAccount, 1, 50) AS SSRS_gMSA_Account, -- widened from 20 for long domain names
+        SUBSTRING(RoleName, 1, 30)    AS RoleName,
+        SUBSTRING(PrincipalType, 1, 30) AS PrincipalType
     FROM #FoundGmsa
-    ORDER BY DBName, RoleName, SSRS_gMSA_Account, PrincipalType;
+    ORDER BY DbName, RoleName, SSRS_gMSA_Account, PrincipalType;
 END
-ELSE
+Else
 BEGIN
-    PRINT N'SSRS likely using a system account (no gMSA found in RSExecRole/db_owner).';
+    PRINT 'SSRS likely using a system account (no gMSA found in RSExecRole/db_owner).';
 END
 
--- Cleanup (optional)
-DROP TABLE IF EXISTS #FoundGmsa;
-DROP TABLE IF EXISTS #RSDBs;
-
-END
-ELSE
-BEGIN
-    PRINT 'No SSRS or running on the SECONDARY. Skipping ----.';
-END
+------------------------------------------------------------
+-- 6) Cleanup (2008-safe)
+------------------------------------------------------------
+IF OBJECT_ID('tempdb..#FoundGmsa') IS NOT NULL DROP TABLE #FoundGmsa;
+IF OBJECT_ID('tempdb..#RSDBs')    IS NOT NULL DROP TABLE #RSDBs;
 --------------------------------------------------------------
 --GET SSRS SERVERS LIST
 IF EXISTS (
@@ -1763,7 +1996,6 @@ END
 GO
 -------------------------------------------------
 
------------------------------------------------
 --GET SSIS SCALE OUT
 ---------------------------------------------------
 ---revised 23/10/25 to remove false positives on standalone
@@ -1834,100 +2066,115 @@ END
 PRINT '---------------------------';
 
 -- SSISDB REPORT
---Adrian Sleigh 15/10/25
--------------------------------------------------
-SET NOCOUNT ON
-PRINT 'SSISDB REPORT  '+ @@servername + CONVERT(VARCHAR(20),getdate(),120)
-PRINT '-------------------------------------------------------'
+SET NOCOUNT ON;
+
+PRINT 'SSISDB REPORT  ' + @@SERVERNAME + ' ' + CONVERT(VARCHAR(20), GETDATE(), 120);
+PRINT '-------------------------------------------------------';
+
+-- Files for SSISDB (safe on all versions; returns 0 rows if SSISDB not present)
 SELECT 
-    SUBSTRING(DB_NAME(database_id),1,20) AS SSISDB_FILES,
+    SUBSTRING(DB_NAME(database_id), 1, 20) AS SSISDB_FILES,
     size * 8 / 1024 AS SizeMB,
-	SUBSTRING(physical_name,1,90) AS PhysicalName
- FROM sys.master_files
+    SUBSTRING(physical_name, 1, 90) AS PhysicalName
+FROM sys.master_files
 WHERE DB_NAME(database_id) = 'SSISDB';
 
--- Execution History Summary
--- Check if any packages ran in the last 3 months
-IF EXISTS (
-    SELECT 1
-    FROM SSISDB.catalog.executions
-    WHERE start_time > DATEADD(MONTH, -3, GETDATE())
-)
+-- If SSISDB isn't present, skip the rest cleanly
+IF DB_ID('SSISDB') IS NULL
 BEGIN
-    PRINT 'Packages ran in the last 3 months';
-    PRINT '---------------------------------';
-
-    SELECT 
-        TOP 100 
-        SUBSTRING(project_name, 1, 40) AS Project,
-        SUBSTRING(package_name, 1, 30) AS PackageName,
-        COUNT(*) AS ExecutionCount,
-        CONVERT(VARCHAR(20), start_time, 120) AS StartTime,
-        AVG(DATEDIFF(SECOND, start_time, end_time)) AS AvgDurationSec
-    FROM SSISDB.catalog.executions
-    WHERE start_time > DATEADD(MONTH, -3, GETDATE())
-    GROUP BY project_name, package_name, start_time
-    ORDER BY ExecutionCount DESC;
+    PRINT 'SSISDB not present on this instance. Skipping SSIS Catalog queries.';
 END
 ELSE
 BEGIN
-    PRINT N'⚠️ No SSISDB packages ran in the last 3 months';
-END
-
--- Retention Policy Check
-SELECT
-    SUBSTRING(property_name,1,30) AS Property_Name,
-    SUBSTRING(property_value,1,10)AS Property_Value
-FROM SSISDB.catalog.catalog_properties
-WHERE property_name IN ('RETENTION_WINDOW', 'OPERATION_CLEANUP_ENABLED');
-
--- Orphaned Executions (no logs)
--- Check for orphaned executions (executions with no operation messages)
-IF EXISTS (
-    SELECT 1
-    FROM SSISDB.catalog.executions e
-    LEFT JOIN SSISDB.catalog.operation_messages om ON e.execution_id = om.operation_id
-    WHERE om.operation_id IS NULL
-)
+    -- Run all SSISDB.catalog.* references inside dynamic SQL (avoids compile errors on 2008/Non-SSIS Catalog)
+    DECLARE @sql NVARCHAR(MAX) = N'
+IF OBJECT_ID(''SSISDB.catalog.executions'') IS NULL
+   OR OBJECT_ID(''SSISDB.catalog.catalog_properties'') IS NULL
 BEGIN
-    SELECT 
-        'Orphaned Executions found' AS Orphaned_Executions,
-        SUBSTRING(e.project_name, 1, 50) AS Project_Name,
-        SUBSTRING(e.package_name, 1, 40) AS Package_Name,
-		CONVERT(VARCHAR(20),e.start_time,120) AS start_time,
-      	CONVERT(VARCHAR(20),e.end_time,120) AS end_time
-     
-    FROM SSISDB.catalog.executions e
-    LEFT JOIN SSISDB.catalog.operation_messages om ON e.execution_id = om.operation_id
-    WHERE om.operation_id IS NULL;
+    PRINT ''SSISDB exists but Integration Services Catalog not initialized (catalog.* views missing). Skipping SSIS report.'';
 END
 ELSE
 BEGIN
-    PRINT 'No SSISDB Orphaned Executions Found';
+    -- Execution History Summary
+    IF EXISTS (
+        SELECT 1
+        FROM SSISDB.catalog.executions
+        WHERE start_time > DATEADD(MONTH, -3, GETDATE())
+    )
+    BEGIN
+        PRINT ''Packages ran in the last 3 months'';
+        PRINT ''---------------------------------'';
+
+        -- Note: Grouping by start_time will make ExecutionCount mostly 1; 
+        -- keeping your intent but commonly you''d group by project/package only.
+        SELECT TOP (100)
+            SUBSTRING(project_name, 1, 40) AS Project,
+            SUBSTRING(package_name, 1, 30) AS PackageName,
+            COUNT(*) AS ExecutionCount,
+            CONVERT(VARCHAR(20), start_time, 120) AS StartTime,
+            AVG(DATEDIFF(SECOND, start_time, end_time)) AS AvgDurationSec
+        FROM SSISDB.catalog.executions
+        WHERE start_time > DATEADD(MONTH, -3, GETDATE())
+        GROUP BY project_name, package_name, start_time
+        ORDER BY ExecutionCount DESC;
+    END
+    ELSE
+    BEGIN
+        PRINT ''No SSISDB packages ran in the last 3 months'';
+    END
+
+    -- Retention Policy Check (property_value is sql_variant -> CAST for SUBSTRING)
+    SELECT
+        SUBSTRING(property_name, 1, 30) AS Property_Name,
+        SUBSTRING(CAST(property_value AS NVARCHAR(256)), 1, 50) AS Property_Value
+    FROM SSISDB.catalog.catalog_properties
+    WHERE property_name IN (''RETENTION_WINDOW'', ''OPERATION_CLEANUP_ENABLED'');
+
+    -- Orphaned Executions (no logs)
+    IF EXISTS (
+        SELECT 1
+        FROM SSISDB.catalog.executions e
+        LEFT JOIN SSISDB.catalog.operation_messages om ON e.execution_id = om.operation_id
+        WHERE om.operation_id IS NULL
+    )
+    BEGIN
+        SELECT 
+            ''Orphaned Executions found'' AS Orphaned_Executions,
+            SUBSTRING(e.project_name, 1, 50) AS Project_Name,
+            SUBSTRING(e.package_name, 1, 40) AS Package_Name,
+            CONVERT(VARCHAR(20), e.start_time, 120) AS start_time,
+            CONVERT(VARCHAR(20), e.end_time, 120) AS end_time
+        FROM SSISDB.catalog.executions e
+        LEFT JOIN SSISDB.catalog.operation_messages om ON e.execution_id = om.operation_id
+        WHERE om.operation_id IS NULL;
+    END
+    ELSE
+    BEGIN
+        PRINT ''No SSISDB Orphaned Executions Found'';
+    END
+
+    -- Old Execution Data (older than 30 days)
+    SELECT
+        CAST(COUNT(*) AS VARCHAR(20)) + '' packages not run in over 30 days '' AS Message
+    FROM SSISDB.catalog.executions
+    WHERE start_time < DATEADD(DAY, -30, GETDATE());
+
+    SELECT
+        SUBSTRING(package_name, 1, 40) AS Package_Name,
+        SUBSTRING(project_name, 1, 40) AS Project_Name,
+        CONVERT(VARCHAR(20), start_time, 120) AS start_time,
+        CONVERT(VARCHAR(20), end_time, 120) AS end_time
+    FROM SSISDB.catalog.executions
+    ORDER BY start_time;
 END
-
--- Old Execution Data (older than retention window)
--- Summary count
-
-SET NOCOUNT ON
-SELECT
-    CAST(COUNT(*) AS VARCHAR) + ' packages not run in over 30 days ' AS Message
-FROM SSISDB.catalog.executions
-WHERE start_time < DATEADD(DAY, -30, GETDATE());
-
-SELECT
-    SUBSTRING(package_name, 1, 40) AS Package_Name,
-    SUBSTRING(project_name,1,40)AS Project_Name,
-    CONVERT(VARCHAR(20),start_time,120) AS start_time,
-    CONVERT(VARCHAR(20),end_time,120) AS end_time
-FROM SSISDB.catalog.executions
---WHERE start_time < DATEADD(DAY, -30, GETDATE())
-ORDER BY start_time;
-
-----------------------------------------------------------------
-
-
-
+';
+    BEGIN TRY
+        EXEC sp_executesql @sql;
+    END TRY
+    BEGIN CATCH
+        PRINT 'SSISDB section skipped due to error: ' + ERROR_MESSAGE();
+    END CATCH
+END
 
 ----------------------------------------------------------------
 
@@ -1987,95 +2234,115 @@ GO
 --------------------------------------------
 SET NOCOUNT ON;
 
--- Create a permanent results table in tempdb
-USE tempdb;
-IF OBJECT_ID('dbo.SystemTableScanResults') IS NOT NULL DROP TABLE dbo.SystemTableScanResults;
-CREATE TABLE dbo.SystemTableScanResults (
-    DatabaseName SYSNAME,
-    SystemTable SYSNAME,
-    RecommendedView SYSNAME,
-    ReferencingObject SYSNAME,
-    ObjectType NVARCHAR(60),
-    SchemaName SYSNAME,
-    CodeSnippet NVARCHAR(MAX)
-);
+PRINT 'SSISDB REPORT  ' + @@SERVERNAME + ' ' + CONVERT(VARCHAR(20), GETDATE(), 120);
+PRINT '-------------------------------------------------------';
 
-DECLARE @dbName2 SYSNAME;
-DECLARE @sql NVARCHAR(MAX);
+-- Files for SSISDB (safe on all versions; returns 0 rows if SSISDB not present)
+SELECT 
+    SUBSTRING(DB_NAME(database_id), 1, 20) AS SSISDB_FILES,
+    size * 8 / 1024 AS SizeMB,
+    SUBSTRING(physical_name, 1, 90) AS PhysicalName
+FROM sys.master_files
+WHERE DB_NAME(database_id) = 'SSISDB';
 
--- Loop through user databases
-DECLARE dbs CURSOR LOCAL FAST_FORWARD FOR
-
-SELECT d.name
-FROM sys.databases d
-LEFT JOIN sys.dm_hadr_database_replica_states drs
-    ON d.database_id = drs.database_id
-LEFT JOIN sys.dm_hadr_availability_replica_states ars
-    ON drs.replica_id = ars.replica_id
-LEFT JOIN sys.availability_replicas ar
-    ON ars.replica_id = ar.replica_id
-WHERE d.database_id > 4
-  AND d.state_desc = 'ONLINE'
-  AND d.is_read_only = 0
-  AND (ars.role = 1 OR ars.role IS NULL); -- 1 = PRIMARY
-
-
-OPEN dbs;
-FETCH NEXT FROM dbs INTO @dbName2;
-
-WHILE @@FETCH_STATUS = 0
+-- If SSISDB isn't present, skip the rest cleanly
+IF DB_ID('SSISDB') IS NULL
 BEGIN
-    SET @sql = '
-    USE [' + @dbName2 + '];
-    SET NOCOUNT ON;
-
-    WITH SystemTableMap AS (
-        SELECT * FROM (VALUES
-            (''sysobjects'', ''sys.objects''),
-            (''sysindexes'', ''sys.indexes''),
-            (''syscolumns'', ''sys.columns''),
-            (''sysusers'', ''sys.database_principals''),
-            (''syscomments'', ''sys.sql_modules''),
-            (''sysdepends'', ''sys.sql_expression_dependencies'')
-        ) AS tbl(SystemTable, RecommendedView)
-    )
-    INSERT INTO tempdb.dbo.SystemTableScanResults
-    SELECT
-        DB_NAME(),
-        stm.SystemTable,
-        stm.RecommendedView,
-        OBJECT_NAME(m.object_id),
-        o.type_desc,
-        OBJECT_SCHEMA_NAME(m.object_id),
-        LEFT(m.definition, 500)
-    FROM sys.sql_modules m
-    JOIN sys.objects o ON m.object_id = o.object_id
-    CROSS JOIN SystemTableMap stm
-    WHERE m.definition LIKE ''%'' + stm.SystemTable + ''%'';
-    ';
-
-    EXEC (@sql);
-
-    FETCH NEXT FROM dbs INTO @dbName2;
+    PRINT 'SSISDB not present on this instance. Skipping SSIS Catalog queries.';
 END
+ELSE
+BEGIN
+    -- Run all SSISDB.catalog.* references inside dynamic SQL (avoids compile errors on 2008/Non-SSIS Catalog)
+    DECLARE @sql NVARCHAR(MAX) = N'
+IF OBJECT_ID(''SSISDB.catalog.executions'') IS NULL
+   OR OBJECT_ID(''SSISDB.catalog.catalog_properties'') IS NULL
+BEGIN
+    PRINT ''SSISDB exists but Integration Services Catalog not initialized (catalog.* views missing). Skipping SSIS report.'';
+END
+ELSE
+BEGIN
+    -- Execution History Summary
+    IF EXISTS (
+        SELECT 1
+        FROM SSISDB.catalog.executions
+        WHERE start_time > DATEADD(MONTH, -3, GETDATE())
+    )
+    BEGIN
+        PRINT ''Packages ran in the last 3 months'';
+        PRINT ''---------------------------------'';
 
-CLOSE dbs;
-DEALLOCATE dbs;
+        -- Note: Grouping by start_time will make ExecutionCount mostly 1; 
+        -- keeping your intent but commonly you''d group by project/package only.
+        SELECT TOP (100)
+            SUBSTRING(project_name, 1, 40) AS Project,
+            SUBSTRING(package_name, 1, 30) AS PackageName,
+            COUNT(*) AS ExecutionCount,
+            CONVERT(VARCHAR(20), start_time, 120) AS StartTime,
+            AVG(DATEDIFF(SECOND, start_time, end_time)) AS AvgDurationSec
+        FROM SSISDB.catalog.executions
+        WHERE start_time > DATEADD(MONTH, -3, GETDATE())
+        GROUP BY project_name, package_name, start_time
+        ORDER BY ExecutionCount DESC;
+    END
+    ELSE
+    BEGIN
+        PRINT ''No SSISDB packages ran in the last 3 months'';
+    END
 
--- Output results
-PRINT 'DATABASES THAT ARE ACCESSING SYSTEM TABLES '
-SELECT
-SUBSTRING(DatabaseName,1,60)AS DatabaseName,
-SUBSTRING(SystemTable,1,20)AS SystemTable,
-SUBSTRING(RecommendedView,1,20)AS USE_Substitute,
-SUBSTRING(ReferencingObject,1,30)AS ReferencingObject,
-SUBSTRING(ObjectType,1,30)AS ObjectType,
-SUBSTRING(SchemaName,1,20)AS SchemaName--,CodeSnippet
-FROM tempdb.dbo.SystemTableScanResults;
+    -- Retention Policy Check (property_value is sql_variant -> CAST for SUBSTRING)
+    SELECT
+        SUBSTRING(property_name, 1, 30) AS Property_Name,
+        SUBSTRING(CAST(property_value AS NVARCHAR(256)), 1, 50) AS Property_Value
+    FROM SSISDB.catalog.catalog_properties
+    WHERE property_name IN (''RETENTION_WINDOW'', ''OPERATION_CLEANUP_ENABLED'');
 
--- Optional: clean up
-DROP TABLE tempdb.dbo.SystemTableScanResults;
+    -- Orphaned Executions (no logs)
+    IF EXISTS (
+        SELECT 1
+        FROM SSISDB.catalog.executions e
+        LEFT JOIN SSISDB.catalog.operation_messages om ON e.execution_id = om.operation_id
+        WHERE om.operation_id IS NULL
+    )
+    BEGIN
+        SELECT 
+            ''Orphaned Executions found'' AS Orphaned_Executions,
+            SUBSTRING(e.project_name, 1, 50) AS Project_Name,
+            SUBSTRING(e.package_name, 1, 40) AS Package_Name,
+            CONVERT(VARCHAR(20), e.start_time, 120) AS start_time,
+            CONVERT(VARCHAR(20), e.end_time, 120) AS end_time
+        FROM SSISDB.catalog.executions e
+        LEFT JOIN SSISDB.catalog.operation_messages om ON e.execution_id = om.operation_id
+        WHERE om.operation_id IS NULL;
+    END
+    ELSE
+    BEGIN
+        PRINT ''No SSISDB Orphaned Executions Found'';
+    END
+
+    -- Old Execution Data (older than 30 days)
+    SELECT
+        CAST(COUNT(*) AS VARCHAR(20)) + '' packages not run in over 30 days '' AS Message
+    FROM SSISDB.catalog.executions
+    WHERE start_time < DATEADD(DAY, -30, GETDATE());
+
+    SELECT
+        SUBSTRING(package_name, 1, 40) AS Package_Name,
+        SUBSTRING(project_name, 1, 40) AS Project_Name,
+        CONVERT(VARCHAR(20), start_time, 120) AS start_time,
+        CONVERT(VARCHAR(20), end_time, 120) AS end_time
+    FROM SSISDB.catalog.executions
+    ORDER BY start_time;
+END
+';
+    BEGIN TRY
+        EXEC sp_executesql @sql;
+    END TRY
+    BEGIN CATCH
+        PRINT 'SSISDB section skipped due to error: ' + ERROR_MESSAGE();
+    END CATCH
+END
 ----------------------------------------------
+
 -----CHECK MAXDOP ----------------------------
 DECLARE @service_account VARCHAR(50) = '';
 DECLARE @fillfactor VARCHAR(2) = '0';
@@ -2171,185 +2438,342 @@ ELSE
     PRINT N'✅ ADVANCED OPTIONS ENABLED';
 ----------------------------------------------------------
 ------FIND SSRS REPORTS DEPLOYED
-------13/08/25
 SET NOCOUNT ON;
 SET XACT_ABORT OFF;
 
 DECLARE @ReportDbName SYSNAME = NULL;
 DECLARE @sql1 NVARCHAR(MAX);
+DECLARE @IsDbInAG BIT = 0;
 
 BEGIN TRY
-    -- Step 1: Find a ReportServer database (excluding TempDB)
-    SELECT TOP 1 @ReportDbName = name
-    FROM sys.databases
-    WHERE name LIKE 'ReportServer%' 
-      AND name NOT LIKE '%TempDB'
-      AND state_desc = 'ONLINE';
+    ------------------------------------------------------------------
+    -- Step 1: Find a ReportServer database (excluding TempDB variants)
+    ------------------------------------------------------------------
+    SELECT TOP (1) @ReportDbName = d.name
+    FROM sys.databases AS d
+    WHERE d.name LIKE N'ReportServer%' 
+      AND d.name NOT LIKE N'%TempDB'
+      AND d.state_desc = N'ONLINE';
 
-    -- Step 2: If found, check AG status and list all replicas
+    ------------------------------------------------------------------
+    -- Step 2: If found, check AG status and list replicas (2012+ only)
+    --         Use dynamic SQL + existence checks to avoid 2008 errors.
+    ------------------------------------------------------------------
     IF @ReportDbName IS NOT NULL
     BEGIN
-        PRINT N'⚠️ SSRS DATABASE DISCOVERED: ' + @ReportDbName;
+        PRINT N'SSRS DATABASE DISCOVERED: ' + @ReportDbName;
 
-        IF EXISTS (
-            SELECT 1
-            FROM sys.dm_hadr_database_replica_states
-            WHERE database_id = DB_ID(@ReportDbName)
-        )
+        IF OBJECT_ID('master.sys.dm_hadr_database_replica_states') IS NOT NULL
         BEGIN
-            PRINT N'⚠️ Availability Group detected. Listing replica roles:';
+            -- Compute “is this database in an AG?” safely
+            DECLARE @sqlAgCheck NVARCHAR(MAX) = N'
+                DECLARE @dbid INT = DB_ID(@DbName);
+                SELECT @out = CASE WHEN EXISTS (
+                    SELECT 1 
+                    FROM master.sys.dm_hadr_database_replica_states 
+                    WHERE database_id = @dbid
+                ) THEN 1 ELSE 0 END;';
+            EXEC sp_executesql @sqlAgCheck, N'@DbName SYSNAME, @out BIT OUTPUT', @DbName = @ReportDbName, @out = @IsDbInAG OUTPUT;
 
-            SELECT 
-                SUBSTRING(ag.name,1,60) AS AG_Name,
-                SUBSTRING(ar.replica_server_name,1,40) AS InstanceName,
-                SUBSTRING(ars.role_desc,1,20) AS ReplicaRole,
-                SUBSTRING(ars.connected_state_desc,1,20) AS ConnectionState
-            FROM sys.availability_groups ag
-            JOIN sys.availability_replicas ar ON ag.group_id = ar.group_id
-            JOIN sys.dm_hadr_availability_replica_states ars ON ar.replica_id = ars.replica_id
-            ORDER BY ars.role_desc DESC;
+            IF @IsDbInAG = 1
+            BEGIN
+                PRINT N'Availability Group detected. Listing replica roles:';
+
+                BEGIN TRY
+                    EXEC(N'
+                        SELECT 
+                            SUBSTRING(ag.name, 1, 60)               AS AG_Name,
+                            SUBSTRING(ar.replica_server_name, 1, 40) AS InstanceName,
+                            SUBSTRING(ars.role_desc, 1, 20)          AS ReplicaRole,
+                            SUBSTRING(ars.connected_state_desc, 1, 20) AS ConnectionState
+                        FROM sys.availability_groups AS ag
+                        JOIN sys.availability_replicas AS ar 
+                          ON ag.group_id = ar.group_id
+                        JOIN sys.dm_hadr_availability_replica_states AS ars 
+                          ON ar.replica_id = ars.replica_id
+                        ORDER BY ars.role_desc DESC;');
+                END TRY
+                BEGIN CATCH
+                    PRINT 'AG metadata present but failed to query replicas: ' + ISNULL(ERROR_MESSAGE(), 'unknown error');
+                END CATCH
+            END
+            ELSE
+            BEGIN
+                PRINT N'SSRS database is not part of an Availability Group.';
+            END
         END
         ELSE
         BEGIN
-            PRINT N'⚠️ SSRS DATABASE IS NOT PART OF AN AVAILABILITY GROUP.';
+            PRINT N'Availability Groups not supported on this instance (or DMVs not available).';
         END
 
-        -- Step 3: Run SSRS config query
-        SET @sql1 = '
-        USE [' + @ReportDbName + '];
+        ------------------------------------------------------------------
+        -- Step 3: Read SSRS ConfigurationInfo from the ReportServer DB
+        --         (table exists for Native mode; guard with OBJECT_ID).
+        ------------------------------------------------------------------
+        SET @sql1 = N'
+        USE ' + QUOTENAME(@ReportDbName) + N';
 
-        SELECT 
-            SUBSTRING([Name],1,60) AS SSRS_CONFIG,
-            SUBSTRING([Value],1,20) AS SSRS_Value
-        FROM 
-            [dbo].[ConfigurationInfo]
-        WHERE 
-            [Name] IN (
-                ''EditSessionCacheLimit'',
-                ''EditSessionTimeout'',
-                ''MyReportsRole'',
-                ''SessionTimeout'',
-                ''SharePointIntegrated'',
-                ''SiteName''
-            );';
+        IF OBJECT_ID(N''dbo.ConfigurationInfo'', N''U'') IS NULL
+        BEGIN
+            PRINT ''ConfigurationInfo table not found in ' + REPLACE(@ReportDbName, '''', '''''') + ' (possibly SharePoint mode or different schema). Skipping config.'';
+        END
+        ELSE
+        BEGIN
+            SELECT 
+                SUBSTRING([Name], 1, 60) AS SSRS_CONFIG,
+                SUBSTRING(CAST([Value] AS NVARCHAR(256)), 1, 50) AS SSRS_Value
+            FROM dbo.ConfigurationInfo
+            WHERE [Name] IN (
+                N''EditSessionCacheLimit'',
+                N''EditSessionTimeout'',
+                N''MyReportsRole'',
+                N''SessionTimeout'',
+                N''SharePointIntegrated'',
+                N''SiteName''
+            );
+        END';
 
-        EXEC sp_executesql @sql1;
+        BEGIN TRY
+            EXEC sp_executesql @sql1;
+        END TRY
+        BEGIN CATCH
+            PRINT 'SSRS ConfigurationInfo query failed: ' + ERROR_MESSAGE();
+        END CATCH
     END
     ELSE
     BEGIN
-        PRINT N'⛔ NO SSRS DATABASES DISCOVERED';
+        PRINT N'No SSRS databases discovered.';
     END
 END TRY
 BEGIN CATCH
-    PRINT '';
-END CATCH
-     PRINT '-------------------------------'
+    PRINT 'Unhandled error in SSRS DB discovery section: ' + ERROR_MESSAGE();
+END CATCH;
+
+PRINT '-------------------------------';
 SET NOCOUNT ON;
 
--- Check if current instance is PRIMARY
-IF EXISTS (
-    SELECT 1
-    FROM sys.dm_hadr_availability_replica_states ars
-    JOIN sys.availability_replicas ar ON ars.replica_id = ar.replica_id
-    WHERE ars.role_desc = 'PRIMARY'
-      AND ar.replica_server_name = @@SERVERNAME
-)
+--------------------------------------------------------------------------------
+-- Part 2: Instance PRIMARY check (AG-aware) and SSRS Usage Report (Catalog)
+--         2008-safe: No static AG DMV references; use sys.databases not sysdatabases
+--------------------------------------------------------------------------------
+DECLARE @IsPrimary BIT = 1; -- Default to primary on non-AG instances (e.g., SQL 2008)
+IF OBJECT_ID('master.sys.dm_hadr_availability_replica_states') IS NOT NULL
+   AND OBJECT_ID('master.sys.availability_replicas') IS NOT NULL
 BEGIN
-    DECLARE @SSRSInstalled BIT = 0;
-    DECLARE @SSRSDatabaseName NVARCHAR(128);
-    DECLARE @sql5 NVARCHAR(MAX);
+    DECLARE @sqlPrimary NVARCHAR(MAX) = N'
+        SELECT @out = CASE WHEN EXISTS(
+            SELECT 1
+            FROM master.sys.dm_hadr_availability_replica_states AS ars
+            INNER JOIN master.sys.availability_replicas AS ar
+                ON ars.replica_id = ar.replica_id
+            WHERE ars.is_local = 1
+              AND ars.role_desc = ''PRIMARY''
+              AND ar.replica_server_name = @@SERVERNAME
+        ) THEN 1 ELSE 0 END;';
+    EXEC sp_executesql @sqlPrimary, N'@out BIT OUTPUT', @out = @IsPrimary OUTPUT;
+END
 
-    -- Check for SSRS-related databases
-    SELECT TOP 1 @SSRSDatabaseName = name
-    FROM master.dbo.sysdatabases
-    WHERE name LIKE 'ReportServer%';
-
-    IF @SSRSDatabaseName IS NOT NULL
-    BEGIN
-        SET @SSRSInstalled = 1;
-    END
-
-    -- Conditional execution
-    IF @SSRSInstalled = 1
-    BEGIN
-        PRINT N'⚠️ REPORTING SERVER DATABASES FOUND: ' + @SSRSDatabaseName;
-
-        SET @sql5 = '
-        SELECT
-            CASE CL.Type
-                WHEN 1 THEN ''Folder''
-                WHEN 2 THEN ''Report''
-                WHEN 3 THEN ''Resource''
-                WHEN 4 THEN ''Linked Report''
-                WHEN 5 THEN ''Data Source''
-            END                                 AS ObjectType,
-            SUBSTRING(CP.Name,1,20)             AS ParentName,
-            SUBSTRING(CL.Name,1,60)             AS Name,
-            SUBSTRING(CL.Path ,1,90)            AS Path,
-            SUBSTRING(CU.UserName,1,20)         AS CreatedBy,
-            CL.CreationDate                     AS CreationDate,
-            SUBSTRING(UM.UserName,1,20)         AS ModifiedBy,
-            CL.ModifiedDate                     AS ModifiedDate,
-            CE.CountStart                       AS TotalExecutions,
-            SUBSTRING(EL.InstanceName,1,20)     AS LastExecutedInstanceName,
-            SUBSTRING(EL.UserName,1,20)         AS LastExecuter,
-            EL.Format                           AS LastFormat,
-            EL.TimeStart                        AS LastTimeStarted,
-            EL.TimeEnd                          AS LastTimeEnded,
-            EL.TimeDataRetrieval                AS LastTimeDataRetrieval,
-            EL.TimeProcessing                   AS LastTimeProcessing,
-            EL.TimeRendering                    AS LastTimeRendering,
-            SUBSTRING(EL.Status,1,10)           AS LastResult,
-            EL.ByteCount                        AS LastByteCount,
-            EL.[RowCount]                       AS LastRowCount,
-            SUBSTRING(SO.UserName,1,20)         AS SubscriptionOwner,
-            SUBSTRING(SU.UserName,1,20)         AS SubscriptionModifiedBy,
-            SS.ModifiedDate                     AS SubscriptionModifiedDate,
-            SUBSTRING(SS.Description,1,30)      AS SubscriptionDescription,
-            SUBSTRING(SS.LastStatus,1,10)       AS SubscriptionLastResult,
-            SS.LastRunTime                      AS SubscriptionLastRunTime
-        FROM [' + @SSRSDatabaseName + '].dbo.Catalog CL
-        JOIN [' + @SSRSDatabaseName + '].dbo.Catalog CP
-            ON CP.ItemID = CL.ParentID
-        JOIN [' + @SSRSDatabaseName + '].dbo.Users CU
-            ON CU.UserID = CL.CreatedByID
-        JOIN [' + @SSRSDatabaseName + '].dbo.Users UM
-            ON UM.UserID = CL.ModifiedByID
-        LEFT JOIN ( SELECT
-                        ReportID,
-                        MAX(TimeStart) LastTimeStart
-                    FROM [' + @SSRSDatabaseName + '].dbo.ExecutionLog
-                    GROUP BY ReportID) LE
-            ON LE.ReportID = CL.ItemID
-        LEFT JOIN ( SELECT
-                        ReportID,
-                        COUNT(TimeStart) CountStart
-                    FROM [' + @SSRSDatabaseName + '].dbo.ExecutionLog
-                    GROUP BY ReportID) CE
-            ON CE.ReportID = CL.ItemID
-        LEFT JOIN [' + @SSRSDatabaseName + '].dbo.ExecutionLog EL
-            ON EL.ReportID = LE.ReportID
-            AND EL.TimeStart = LE.LastTimeStart
-        LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Subscriptions SS
-            ON SS.Report_OID = CL.ItemID
-        LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Users SO
-            ON SO.UserID = SS.OwnerID
-        LEFT JOIN [' + @SSRSDatabaseName + '].dbo.Users SU
-            ON SU.UserID = SS.ModifiedByID
-        WHERE 1 = 1
-        ORDER BY CP.Name, CL.Name ASC;
-        ';
-
-        EXEC sp_executesql @sql5;
-    END
-    ELSE
-    BEGIN
-        PRINT N'⛔ NO SSRS DATABASE FOUND. Skipping report analysis.';
-    END
+IF @IsPrimary = 0
+BEGIN
+    PRINT N'Skipping SSRS analysis (running on AG secondary).';
 END
 ELSE
 BEGIN
-    PRINT N'⛔ Skipping SSRS analysis.';
+    DECLARE @SSRSInstalled BIT = 0;
+    DECLARE @SSRSDatabaseName SYSNAME;
+    DECLARE @sql5 NVARCHAR(MAX);
+
+    -- Prefer sys.databases (2008+), exclude TempDB variant
+    SELECT TOP (1) @SSRSDatabaseName = d.name
+    FROM sys.databases AS d
+    WHERE d.name LIKE N'ReportServer%'
+      AND d.name NOT LIKE N'%TempDB'
+      AND d.state_desc = N'ONLINE';
+
+    IF @SSRSDatabaseName IS NOT NULL
+        SET @SSRSInstalled = 1;
+
+    IF @SSRSInstalled = 1
+    BEGIN
+        PRINT N'ReportServer database found: ' + @SSRSDatabaseName;
+
+        -- Use ExecutionLog if present; else try ExecutionLog3 (newer) for last-execution details
+        SET @sql5 = N'
+        USE ' + QUOTENAME(@SSRSDatabaseName) + N';
+
+        IF OBJECT_ID(N''dbo.Catalog'', N''U'') IS NULL
+        BEGIN
+            PRINT ''Catalog table not found in ' + REPLACE(@SSRSDatabaseName, '''', '''''') + '. Skipping report analysis.'';
+        END
+        ELSE
+        BEGIN
+            -- Choose an execution log source
+            DECLARE @HasEL BIT = CASE WHEN OBJECT_ID(N''dbo.ExecutionLog'') IS NOT NULL THEN 1 ELSE 0 END;
+            DECLARE @HasEL3 BIT = CASE WHEN OBJECT_ID(N''dbo.ExecutionLog3'') IS NOT NULL THEN 1 ELSE 0 END;
+
+            IF @HasEL = 0 AND @HasEL3 = 0
+            BEGIN
+                -- Proceed without execution metrics
+                WITH LastExec AS
+                (
+                    SELECT CAST(NULL AS UNIQUEIDENTIFIER) AS ReportID, CAST(NULL AS DATETIME) AS LastTimeStart
+                    WHERE 1 = 0
+                ),
+                CountExec AS
+                (
+                    SELECT CAST(NULL AS UNIQUEIDENTIFIER) AS ReportID, CAST(0 AS INT) AS CountStart
+                    WHERE 1 = 0
+                )
+                SELECT
+                    CASE CL.Type
+                        WHEN 1 THEN ''Folder''
+                        WHEN 2 THEN ''Report''
+                        WHEN 3 THEN ''Resource''
+                        WHEN 4 THEN ''Linked Report''
+                        WHEN 5 THEN ''Data Source''
+                    END                                 AS ObjectType,
+                    SUBSTRING(CP.Name,1,20)            AS ParentName,
+                    SUBSTRING(CL.Name,1,60)            AS Name,
+                    SUBSTRING(CL.Path,1,90)            AS Path,
+                    SUBSTRING(CU.UserName,1,20)        AS CreatedBy,
+                    CL.CreationDate                    AS CreationDate,
+                    SUBSTRING(UM.UserName,1,20)        AS ModifiedBy,
+                    CL.ModifiedDate                    AS ModifiedDate,
+                    0                                   AS TotalExecutions,
+                    CAST(NULL AS NVARCHAR(20))         AS LastExecutedInstanceName,
+                    CAST(NULL AS NVARCHAR(20))         AS LastExecuter,
+                    CAST(NULL AS NVARCHAR(50))         AS LastFormat,
+                    NULL                                AS LastTimeStarted,
+                    NULL                                AS LastTimeEnded,
+                    NULL                                AS LastTimeDataRetrieval,
+                    NULL                                AS LastTimeProcessing,
+                    NULL                                AS LastTimeRendering,
+                    CAST(NULL AS NVARCHAR(10))         AS LastResult,
+                    NULL                                AS LastByteCount,
+                    NULL                                AS LastRowCount,
+                    SUBSTRING(SO.UserName,1,20)        AS SubscriptionOwner,
+                    SUBSTRING(SU.UserName,1,20)        AS SubscriptionModifiedBy,
+                    SS.ModifiedDate                    AS SubscriptionModifiedDate,
+                    SUBSTRING(SS.Description,1,30)     AS SubscriptionDescription,
+                    SUBSTRING(SS.LastStatus,1,10)      AS SubscriptionLastResult,
+                    SS.LastRunTime                     AS SubscriptionLastRunTime
+                FROM dbo.Catalog CL
+                JOIN dbo.Catalog CP
+                  ON CP.ItemID = CL.ParentID
+                JOIN dbo.Users CU
+                  ON CU.UserID = CL.CreatedByID
+                JOIN dbo.Users UM
+                  ON UM.UserID = CL.ModifiedByID
+                LEFT JOIN dbo.Subscriptions SS
+                  ON SS.Report_OID = CL.ItemID
+                LEFT JOIN dbo.Users SO
+                  ON SO.UserID = SS.OwnerID
+                LEFT JOIN dbo.Users SU
+                  ON SU.UserID = SS.ModifiedByID
+                WHERE 1=1
+                ORDER BY CP.Name, CL.Name ASC;
+            END
+            ELSE
+            BEGIN
+                -- Build LastExec / CountExec from whichever log view exists
+                ;WITH LastExec AS
+                (
+                    SELECT ReportID, MAX(TimeStart) AS LastTimeStart
+                    FROM (SELECT ReportID, TimeStart FROM dbo.ExecutionLog
+                          UNION ALL
+                          SELECT ReportID, TimeStart FROM dbo.ExecutionLog3 WHERE @HasEL3 = 1) AS X
+                    GROUP BY ReportID
+                ),
+                CountExec AS
+                (
+                    SELECT ReportID, COUNT(*) AS CountStart
+                    FROM (SELECT ReportID FROM dbo.ExecutionLog
+                          UNION ALL
+                          SELECT ReportID FROM dbo.ExecutionLog3 WHERE @HasEL3 = 1) AS Y
+                    GROUP BY ReportID
+                )
+                SELECT
+                    CASE CL.Type
+                        WHEN 1 THEN ''Folder''
+                        WHEN 2 THEN ''Report''
+                        WHEN 3 THEN ''Resource''
+                        WHEN 4 THEN ''Linked Report''
+                        WHEN 5 THEN ''Data Source''
+                    END                                 AS ObjectType,
+                    SUBSTRING(CP.Name,1,20)            AS ParentName,
+                    SUBSTRING(CL.Name,1,60)            AS Name,
+                    SUBSTRING(CL.Path,1,90)            AS Path,
+                    SUBSTRING(CU.UserName,1,20)        AS CreatedBy,
+                    CL.CreationDate                    AS CreationDate,
+                    SUBSTRING(UM.UserName,1,20)        AS ModifiedBy,
+                    CL.ModifiedDate                    AS ModifiedDate,
+                    CE.CountStart                      AS TotalExecutions,
+                    -- Pull the full row for the last execution from whichever view has it
+                    SUBSTRING(EL.InstanceName,1,20)    AS LastExecutedInstanceName,
+                    SUBSTRING(EL.UserName,1,20)        AS LastExecuter,
+                    EL.Format                          AS LastFormat,
+                    EL.TimeStart                       AS LastTimeStarted,
+                    EL.TimeEnd                         AS LastTimeEnded,
+                    EL.TimeDataRetrieval               AS LastTimeDataRetrieval,
+                    EL.TimeProcessing                  AS LastTimeProcessing,
+                    EL.TimeRendering                   AS LastTimeRendering,
+                    SUBSTRING(EL.Status,1,10)          AS LastResult,
+                    EL.ByteCount                       AS LastByteCount,
+                    EL.[RowCount]                      AS LastRowCount,
+                    SUBSTRING(SO.UserName,1,20)        AS SubscriptionOwner,
+                    SUBSTRING(SU.UserName,1,20)        AS SubscriptionModifiedBy,
+                    SS.ModifiedDate                    AS SubscriptionModifiedDate,
+                    SUBSTRING(SS.Description,1,30)     AS SubscriptionDescription,
+                    SUBSTRING(SS.LastStatus,1,10)      AS SubscriptionLastResult,
+                    SS.LastRunTime                     AS SubscriptionLastRunTime
+                FROM dbo.Catalog CL
+                JOIN dbo.Catalog CP
+                  ON CP.ItemID = CL.ParentID
+                JOIN dbo.Users CU
+                  ON CU.UserID = CL.CreatedByID
+                JOIN dbo.Users UM
+                  ON UM.UserID = CL.ModifiedByID
+                LEFT JOIN LastExec LE
+                  ON LE.ReportID = CL.ItemID
+                LEFT JOIN CountExec CE
+                  ON CE.ReportID = CL.ItemID
+                OUTER APPLY
+                (
+                    SELECT TOP (1) *
+                    FROM (
+                        SELECT *
+                        FROM dbo.ExecutionLog
+                        WHERE ReportID = LE.ReportID AND TimeStart = LE.LastTimeStart
+                        UNION ALL
+                        SELECT *
+                        FROM dbo.ExecutionLog3
+                        WHERE @HasEL3 = 1 AND ReportID = LE.ReportID AND TimeStart = LE.LastTimeStart
+                    ) AS Z
+                    ORDER BY TimeStart DESC
+                ) AS EL
+                LEFT JOIN dbo.Subscriptions SS
+                  ON SS.Report_OID = CL.ItemID
+                LEFT JOIN dbo.Users SO
+                  ON SO.UserID = SS.OwnerID
+                LEFT JOIN dbo.Users SU
+                  ON SU.UserID = SS.ModifiedByID
+                WHERE 1 = 1
+                ORDER BY CP.Name, CL.Name ASC;
+            END
+        END';
+
+        BEGIN TRY
+            EXEC sp_executesql @sql5;
+        END TRY
+        BEGIN CATCH
+            PRINT 'SSRS report analysis failed: ' + ISNULL(ERROR_MESSAGE(), 'unknown error');
+        END CATCH
+    END
+    ELSE
+    BEGIN
+        PRINT N'No SSRS database found. Skipping report analysis.';
+    END
 END
 
 ------------------------------------------------------------------
@@ -2368,9 +2792,10 @@ END
      - SSAS usage can also occur externally (e.g., Power BI/Excel) with no traces here.
    ===================================================================== */
 SET NOCOUNT ON;
+SET XACT_ABORT OFF;
 
 -- =========================================================
--- Prep: temp tables for results
+-- Temp tables for results (2008-safe drops)
 -- =========================================================
 IF OBJECT_ID('tempdb..#LinkedServers') IS NOT NULL DROP TABLE #LinkedServers;
 IF OBJECT_ID('tempdb..#AgentJobs')    IS NOT NULL DROP TABLE #AgentJobs;
@@ -2410,7 +2835,9 @@ CREATE TABLE #SSIS_SSISDB
 
 -- Optional: avoid blocking when scanning metadata
 SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-PRINT N'CHECKING FOR SSAS CONNECTIVITY....'
+
+PRINT 'CHECKING FOR SSAS CONNECTIVITY....';
+
 -- =========================================================
 -- 1) Linked servers using MSOLAP (SSAS OLE DB provider)
 -- =========================================================
@@ -2422,7 +2849,7 @@ BEGIN TRY
       AND s.provider LIKE N'MSOLAP%'; -- e.g., MSOLAP, MSOLAP.8, MSOLAP.9, etc.
 END TRY
 BEGIN CATCH
-    PRINT N'⚠️ Unable to query sys.servers for linked servers (permissions?).';
+    PRINT 'Unable to query sys.servers for linked servers (permissions?).';
 END CATCH;
 
 -- =========================================================
@@ -2435,107 +2862,147 @@ BEGIN TRY
         INSERT INTO #AgentJobs (JobName, StepName, Subsystem)
         SELECT j.name, s.step_name, s.subsystem
         FROM msdb.dbo.sysjobsteps AS s
-        JOIN msdb.dbo.sysjobs AS j
+        JOIN msdb.dbo.sysjobs     AS j
           ON j.job_id = s.job_id
         WHERE s.subsystem IN (N'ANALYSISCOMMAND', N'ANALYSISQUERY');
     END
 END TRY
 BEGIN CATCH
-    PRINT N'⚠️ Unable to query msdb SQL Agent metadata (permissions?).';
+    PRINT 'Unable to query msdb SQL Agent metadata (permissions?).';
 END CATCH;
 
 -- =========================================================
 -- 3) SSIS packages (legacy MSDB store) referencing SSAS
---    Look for 'AnalysisServices' or 'MSOLAP' in package XML
+--    2008-safe: per-row TRY/CATCH on XML cast to avoid batch abort
 -- =========================================================
 BEGIN TRY
     IF OBJECT_ID(N'msdb.dbo.sysssispackages') IS NOT NULL
     BEGIN
-        INSERT INTO #SSIS_MSDB (FolderName, PackageName, Location)
-        SELECT f.foldername, p.name, N'MSDB'
-        FROM msdb.dbo.sysssispackages AS p
-        JOIN msdb.dbo.sysssispackagefolders AS f
-          ON p.folderid = f.folderid
-        WHERE TRY_CONVERT(xml, CAST(p.packagedata AS varbinary(max))) IS NOT NULL
-          AND (
-                CONVERT(nvarchar(max), TRY_CONVERT(xml, CAST(p.packagedata AS varbinary(max)))) LIKE N'%AnalysisServices%'
-             OR CONVERT(nvarchar(max), TRY_CONVERT(xml, CAST(p.packagedata AS varbinary(max)))) LIKE N'%MSOLAP%'
-          );
+        DECLARE @pname sysname, @fname sysname, @data varbinary(max);
+
+        DECLARE c_msdb CURSOR LOCAL FAST_FORWARD FOR
+            SELECT p.name, f.foldername, p.packagedata
+            FROM msdb.dbo.sysssispackages AS p
+            JOIN msdb.dbo.sysssispackagefolders AS f
+              ON p.folderid = f.folderid;
+
+        OPEN c_msdb;
+        FETCH NEXT FROM c_msdb INTO @pname, @fname, @data;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            BEGIN TRY
+                DECLARE @x xml;
+                SET @x = CAST(CAST(@data AS varbinary(max)) AS xml);
+
+                IF CONVERT(nvarchar(max), @x) LIKE N'%AnalysisServices%'
+                   OR CONVERT(nvarchar(max), @x) LIKE N'%MSOLAP%'
+                BEGIN
+                    INSERT INTO #SSIS_MSDB (FolderName, PackageName, Location)
+                    VALUES (@fname, @pname, N'MSDB');
+                END
+            END TRY
+            BEGIN CATCH
+                -- Invalid XML or other conversion issue for this package; skip it
+                -- PRINT 'Skipping one MSDB package due to conversion error: ' + ERROR_MESSAGE();
+            END CATCH;
+
+            FETCH NEXT FROM c_msdb INTO @pname, @fname, @data;
+        END
+
+        CLOSE c_msdb;
+        DEALLOCATE c_msdb;
     END
 END TRY
 BEGIN CATCH
-    PRINT N'⚠️ Unable to scan MSDB-stored SSIS packages (permissions or SSIS not installed).';
+    PRINT 'Unable to scan MSDB-stored SSIS packages (conversion error or permissions).';
 END CATCH;
 
 -- =========================================================
 -- 4) SSIS packages (SSISDB project deployment) referencing SSAS
---    AG-aware: Only scan if SSISDB is ONLINE here (primary or readable secondary)
+--    2008-safe: use dynamic SQL and object existence checks
 -- =========================================================
 DECLARE 
-    @hasSSISDB bit           = CASE WHEN DB_ID(N'SSISDB') IS NOT NULL THEN 1 ELSE 0 END,
-    @ssisState sysname       = NULL,
-    @ssisReadOnly bit        = NULL,
-    @isPrimaryReplica bit    = NULL;
+    @hasSSISDB       bit      = CASE WHEN DB_ID(N'SSISDB') IS NOT NULL THEN 1 ELSE 0 END,
+    @ssisState       sysname  = NULL,
+    @ssisReadOnly    bit      = NULL,
+    @isPrimaryReplica bit     = NULL;
 
 IF @hasSSISDB = 1
 BEGIN
     SELECT 
-        @ssisState   = d.state_desc,
+        @ssisState    = d.state_desc,
         @ssisReadOnly = d.is_read_only
     FROM sys.databases AS d
     WHERE d.name = N'SSISDB';
 
-    -- If HADR is enabled and SSISDB participates, this returns 1 (primary) or 0 (secondary).
-    -- If not in AG, it may return NULL; we treat NULL as "not in AG".
-    BEGIN TRY
-        SELECT @isPrimaryReplica = TRY_CONVERT(bit, sys.fn_hadr_is_primary_replica(N'SSISDB'));
-    END TRY
-    BEGIN CATCH
-        SET @isPrimaryReplica = NULL; -- function may not be available or AG not enabled
-    END CATCH;
-
-
-	IF @ssisState = N'ONLINE' AND @ssisReadOnly = 0 AND (@isPrimaryReplica = 1 OR @isPrimaryReplica IS NULL)
-
+    -- Determine primary replica (only if HADR function exists; SQL 2012+). Use dynamic SQL to avoid 2008 compile errors.
+    IF OBJECT_ID('sys.fn_hadr_is_primary_replica') IS NOT NULL
     BEGIN
-        -- ONLINE covers both primary (read-write) and readable secondary (read-only).
         BEGIN TRY
-            ;WITH pkg AS
-            (
-                SELECT
-                    f.name   AS FolderName,
-                    prj.name AS ProjectName,
-                    p.name   AS PackageName,
-                    p.package_data
-                FROM SSISDB.internal.packages AS p
-                JOIN SSISDB.internal.projects AS prj
-                  ON p.project_id = prj.project_id
-                JOIN SSISDB.internal.folders AS f
-                  ON prj.folder_id = f.folder_id
-            )
-            INSERT INTO #SSIS_SSISDB (FolderName, ProjectName, PackageName, Location)
-            SELECT
-                pkg.FolderName, pkg.ProjectName, pkg.PackageName, N'SSISDB'
-            FROM pkg
-            CROSS APPLY (SELECT TRY_CONVERT(xml, pkg.package_data) AS pkg_xml) AS x
-            WHERE x.pkg_xml IS NOT NULL
-              AND (
-                    CONVERT(nvarchar(max), x.pkg_xml) LIKE N'%AnalysisServices%'
-                 OR CONVERT(nvarchar(max), x.pkg_xml) LIKE N'%MSOLAP%'
-              );
+            DECLARE @sqlFn NVARCHAR(200);
+            SET @sqlFn = N'SELECT @o = CASE WHEN sys.fn_hadr_is_primary_replica(N''SSISDB'') = 1 THEN 1 ELSE 0 END;';
+            EXEC sp_executesql @sqlFn, N'@o bit OUTPUT', @o = @isPrimaryReplica OUTPUT;
         END TRY
         BEGIN CATCH
-            PRINT N'⚠️ Unable to scan SSISDB packages (permissions? role membership in SSISDB needed).';
-        END CATCH;
+            SET @isPrimaryReplica = NULL;
+        END CATCH
+    END
+
+    -- Only scan when SSISDB is ONLINE and writable here (or not in AG => @isPrimaryReplica IS NULL)
+    IF @ssisState = N'ONLINE' AND @ssisReadOnly = 0 AND (@isPrimaryReplica = 1 OR @isPrimaryReplica IS NULL)
+    BEGIN
+        -- Guard SSIS Catalog internal tables and run via dynamic SQL
+        IF OBJECT_ID(N'SSISDB.internal.packages') IS NOT NULL
+           AND OBJECT_ID(N'SSISDB.internal.projects') IS NOT NULL
+           AND OBJECT_ID(N'SSISDB.internal.folders')  IS NOT NULL
+        BEGIN
+            DECLARE @sqlSSIS NVARCHAR(MAX);
+            SET @sqlSSIS = N'
+                ;WITH pkg AS
+                (
+                    SELECT
+                        f.name   AS FolderName,
+                        prj.name AS ProjectName,
+                        p.name   AS PackageName,
+                        p.package_data
+                    FROM SSISDB.internal.packages AS p
+                    JOIN SSISDB.internal.projects AS prj
+                      ON p.project_id = prj.project_id
+                    JOIN SSISDB.internal.folders AS f
+                      ON prj.folder_id = f.folder_id
+                )
+                INSERT INTO #SSIS_SSISDB (FolderName, ProjectName, PackageName, Location)
+                SELECT
+                    pkg.FolderName, pkg.ProjectName, pkg.PackageName, N''SSISDB''
+                FROM pkg
+                CROSS APPLY (SELECT CAST(pkg.package_data AS xml) AS pkg_xml) AS x
+                WHERE x.pkg_xml IS NOT NULL
+                  AND (
+                        CONVERT(nvarchar(max), x.pkg_xml) LIKE N''%AnalysisServices%''
+                     OR CONVERT(nvarchar(max), x.pkg_xml) LIKE N''%MSOLAP%''
+                  );';
+
+            BEGIN TRY
+                EXEC sp_executesql @sqlSSIS;
+            END TRY
+            BEGIN CATCH
+                PRINT 'Unable to scan SSISDB packages (permissions or conversion error).';
+            END CATCH;
+        END
+        ELSE
+        BEGIN
+            PRINT 'SSISDB exists but Integration Services Catalog internal tables not found. Skipping SSISDB scan.';
+        END
     END
     ELSE
     BEGIN
-        PRINT N'⚠️ SSISDB exists but is not ONLINE on this replica (state: ' + COALESCE(@ssisState, N'UNKNOWN') + N'). Skipping SSISDB scan.';
+        PRINT 'SSISDB exists but is not ONLINE/readable on this replica (state: ' + COALESCE(@ssisState, N'UNKNOWN') + N'). Skipping SSISDB scan.';
     END
 END
 ELSE
 BEGIN
-    PRINT N'⛔ SSISDB database not present on this instance.';
+    PRINT 'SSISDB database not present on this instance.';
 END
 
 -- =========================================================
@@ -2543,37 +3010,38 @@ END
 -- =========================================================
 IF EXISTS (SELECT 1 FROM #LinkedServers)
 BEGIN
-    PRINT N'🔗 SSAS Linked Servers (MSOLAP) found:';
+    PRINT 'SSAS Linked Servers (MSOLAP) found:';
     SELECT name, provider, data_source, product
     FROM #LinkedServers
     ORDER BY name;
 END
 ELSE
 BEGIN
-    PRINT N'⛔ No MSOLAP linked servers found.';
+    PRINT 'No MSOLAP linked servers found.';
 END
 
 IF EXISTS (SELECT 1 FROM #AgentJobs)
 BEGIN
-    PRINT N'🗓️ SQL Agent jobs with Analysis Services steps found:';
+    PRINT 'SQL Agent jobs with Analysis Services steps found:';
     SELECT JobName, StepName, Subsystem
     FROM #AgentJobs
     ORDER BY JobName, StepName;
 END
 ELSE
 BEGIN
-    PRINT N'⛔ No SQL Agent jobs with Analysis Services steps found.';
+    PRINT 'No SQL Agent jobs with Analysis Services steps found.';
 END
+
 IF EXISTS (SELECT 1 FROM #SSIS_MSDB)
 BEGIN
-    PRINT N'📦 SSIS (MSDB) packages referencing SSAS found:';
+    PRINT 'SSIS (MSDB) packages referencing SSAS found:';
     SELECT FolderName, PackageName, Location
     FROM #SSIS_MSDB
     ORDER BY FolderName, PackageName;
 END
 ELSE
 BEGIN
-    PRINT N'⛔ No SSIS (MSDB) packages referencing SSAS found.';
+    PRINT 'No SSIS (MSDB) packages referencing SSAS found.';
 END
 
 IF EXISTS (SELECT 1 FROM #SSIS_SSISDB)
@@ -2585,14 +3053,14 @@ BEGIN
         ELSE IF @ssisReadOnly = 0 SET @roleNote = N' (primary replica)';
     END
 
-    PRINT N'📦 SSIS (SSISDB) packages referencing SSAS found' + @roleNote + N':';
+    PRINT 'SSIS (SSISDB) packages referencing SSAS found' + @roleNote + ':';
     SELECT FolderName, ProjectName, PackageName, Location
     FROM #SSIS_SSISDB
     ORDER BY FolderName, ProjectName, PackageName;
 END
 ELSE
 BEGIN
-    PRINT N'⛔ No SSIS (SSISDB) packages referencing SSAS found (or SSISDB not readable here).';
+    PRINT 'No SSIS (SSISDB) packages referencing SSAS found (or SSISDB not readable here).';
 END
 
 -- =========================================================
@@ -2604,8 +3072,8 @@ DECLARE
     @cntMSDB     int = (SELECT COUNT(*) FROM #SSIS_MSDB),
     @cntSSISDB   int = (SELECT COUNT(*) FROM #SSIS_SSISDB);
 
-SELECT N'Linked Servers (MSOLAP)' AS [Check],
-       @cntLinked                 AS [Count],
+SELECT N'Linked Servers (MSOLAP)'      AS [Check],
+       @cntLinked                      AS [Count],
        CASE WHEN @cntLinked > 0 THEN N'Found' ELSE N'Not Found' END AS [Status]
 UNION ALL
 SELECT N'SQL Agent (ANALYSIS* steps)',
@@ -2620,77 +3088,134 @@ SELECT N'SSIS (SSISDB) packages -> SSAS',
        @cntSSISDB,
        CASE WHEN @cntSSISDB > 0 THEN N'Found' ELSE N'Not Found' END;
 
--- Cleanup (optional)
-DROP TABLE IF EXISTS #LinkedServers;
-DROP TABLE IF EXISTS #AgentJobs;
-DROP TABLE IF EXISTS #SSIS_MSDB;
-DROP TABLE IF EXISTS #SSIS_SSISDB;
+-- =========================================================
+-- Cleanup (2008-safe)
+-- =========================================================
+IF OBJECT_ID('tempdb..#LinkedServers') IS NOT NULL DROP TABLE #LinkedServers;
+IF OBJECT_ID('tempdb..#AgentJobs')    IS NOT NULL DROP TABLE #AgentJobs;
+IF OBJECT_ID('tempdb..#SSIS_MSDB')    IS NOT NULL DROP TABLE #SSIS_MSDB;
+IF OBJECT_ID('tempdb..#SSIS_SSISDB')  IS NOT NULL DROP TABLE #SSIS_SSISDB;
 
   ----------------------------------------------------------------
 -- KERBEROS CHECK
+SET NOCOUNT ON;
 
+------------------------------------------------------------
+-- Kerberos check (2008+)
+------------------------------------------------------------
 IF EXISTS (
     SELECT 1
     FROM sys.dm_exec_connections
-    WHERE session_id = @@SPID AND auth_scheme = 'KERBEROS'
+    WHERE session_id = @@SPID
+      AND auth_scheme = 'KERBEROS'
 )
+BEGIN
     PRINT 'THE INSTANCE IS CONFIGURED TO USE KERBEROS';
-              PRINT '------------------------------------------'
-  ----------------------------------------------------------------
-  --QUERYSTORE
---------------------------------------------------------------------
-SET NOCOUNT ON;
+END
+PRINT '------------------------------------------';
 
--- Create a permanent results table in tempdb
+------------------------------------------------------------
+-- System-table usage scan + Query Store report
+-- (2008 → 2025, AG-aware, no static AG DMV references)
+------------------------------------------------------------
+
+-- Create a permanent results table in tempdb for system-table references
 USE tempdb;
-IF OBJECT_ID('dbo.SystemTableScanResults') IS NOT NULL DROP TABLE dbo.SystemTableScanResults;
+IF OBJECT_ID('dbo.SystemTableScanResults') IS NOT NULL
+    DROP TABLE dbo.SystemTableScanResults;
+
 CREATE TABLE dbo.SystemTableScanResults (
-    DatabaseName SYSNAME,
-    SystemTable SYSNAME,
-    RecommendedView SYSNAME,
-    ReferencingObject SYSNAME,
-    ObjectType NVARCHAR(60),
-    SchemaName SYSNAME,
-    CodeSnippet NVARCHAR(MAX)
+    DatabaseName       SYSNAME,
+    SystemTable        SYSNAME,
+    RecommendedView    SYSNAME,
+    ReferencingObject  SYSNAME,
+    ObjectType         NVARCHAR(60),
+    SchemaName         SYSNAME,
+    CodeSnippet        NVARCHAR(MAX)
 );
 
-DECLARE @DBName SYSNAME;
-DECLARE @SQL6 NVARCHAR(MAX);
+-- Build database list safely across versions
+IF OBJECT_ID('tempdb..#DbList') IS NOT NULL DROP TABLE #DbList;
+CREATE TABLE #DbList (name SYSNAME NOT NULL);
 
--- Cursor to loop through user databases that are ONLINE, writable, and PRIMARY in AG (or not in AG)
+-- Prefer AG metadata if present (SQL 2012+). Use dynamic SQL so SQL 2008 never compiles these names.
+IF OBJECT_ID('master.sys.dm_hadr_database_replica_states') IS NOT NULL
+   AND OBJECT_ID('master.sys.dm_hadr_availability_replica_states') IS NOT NULL
+BEGIN
+    DECLARE @sqlAGDbList NVARCHAR(MAX);
+    SET @sqlAGDbList = N'
+        INSERT INTO #DbList(name)
+        SELECT d.name
+        FROM sys.databases AS d
+        LEFT JOIN master.sys.dm_hadr_database_replica_states     AS drs
+               ON d.database_id = drs.database_id AND drs.is_local = 1
+        LEFT JOIN master.sys.dm_hadr_availability_replica_states AS ars
+               ON drs.replica_id = ars.replica_id
+        WHERE d.database_id > 4
+          AND d.state_desc = ''ONLINE''
+          AND d.is_read_only = 0
+          AND (ars.role = 1 OR ars.role IS NULL);  -- 1 = PRIMARY, NULL = not in AG
+    ';
+
+    BEGIN TRY
+        EXEC sp_executesql @sqlAGDbList;
+    END TRY
+    BEGIN CATCH
+        PRINT 'AG metadata present but failed to enumerate DBs: ' + ISNULL(ERROR_MESSAGE(), 'unknown error');
+        INSERT INTO #DbList(name)
+        SELECT d.name
+        FROM sys.databases AS d
+        WHERE d.database_id > 4
+          AND d.state_desc = 'ONLINE'
+          AND d.is_read_only = 0;
+    END CATCH
+END
+ELSE
+BEGIN
+    -- Legacy / non-AG path (SQL 2008/2008 R2 or servers without AG)
+    -- Use Database Mirroring role if present to skip MIRROR (role=2)
+    INSERT INTO #DbList(name)
+    SELECT d.name
+    FROM sys.databases AS d
+    LEFT JOIN sys.database_mirroring AS dm
+           ON dm.database_id = d.database_id
+    WHERE d.database_id > 4
+      AND d.state_desc = 'ONLINE'
+      AND d.is_read_only = 0
+      AND (dm.mirroring_role IS NULL OR dm.mirroring_role = 1); -- 1 = PRINCIPAL
+END
+
+-- Cursor through selected DBs
+DECLARE @DBName SYSNAME;
+
+--already declared above 29/01/26
+--DECLARE @SQL    NVARCHAR(MAX);
+
 DECLARE db_cursor CURSOR LOCAL FAST_FORWARD FOR
-SELECT d.name
-FROM sys.databases d
-LEFT JOIN sys.dm_hadr_database_replica_states drs
-    ON d.database_id = drs.database_id
-LEFT JOIN sys.dm_hadr_availability_replica_states ars
-    ON drs.replica_id = ars.replica_id
-WHERE d.database_id > 4
-  AND d.state_desc = 'ONLINE'
-  AND d.is_read_only = 0
-  AND (ars.role = 1 OR ars.role IS NULL); -- 1 = PRIMARY, NULL = not in AG
+    SELECT name FROM #DbList;
 
 OPEN db_cursor;
 FETCH NEXT FROM db_cursor INTO @DBName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    PRINT N'🔍 CHECKING DATABASE: ' + QUOTENAME(@DBName);
+    PRINT 'CHECKING DATABASE: ' + QUOTENAME(@DBName);
 
-    BEGIN TRY
-        -- Check for system table usage
-        SET @SQL6 = '
-        USE ' + QUOTENAME(@DBName) + ';
+    ------------------------------------------------------------
+    -- A) System-table usage scan (per DB) -- dynamic SQL only
+    ------------------------------------------------------------
+    SET @SQL = N'
+        USE ' + QUOTENAME(@DBName) + N';
         SET NOCOUNT ON;
 
         WITH SystemTableMap AS (
             SELECT * FROM (VALUES
-                (''sysobjects'', ''sys.objects''),
-                (''sysindexes'', ''sys.indexes''),
-                (''syscolumns'', ''sys.columns''),
-                (''sysusers'', ''sys.database_principals''),
-                (''syscomments'', ''sys.sql_modules''),
-                (''sysdepends'', ''sys.sql_expression_dependencies'')
+                (N''sysobjects'',  N''sys.objects''),
+                (N''sysindexes'',  N''sys.indexes''),
+                (N''syscolumns'',  N''sys.columns''),
+                (N''sysusers'',    N''sys.database_principals''),
+                (N''syscomments'', N''sys.sql_modules''),
+                (N''sysdepends'',  N''sys.sql_expression_dependencies'')
             ) AS tbl(SystemTable, RecommendedView)
         )
         INSERT INTO tempdb.dbo.SystemTableScanResults
@@ -2702,31 +3227,44 @@ BEGIN
             o.type_desc,
             OBJECT_SCHEMA_NAME(m.object_id),
             LEFT(m.definition, 500)
-        FROM sys.sql_modules m
-        JOIN sys.objects o ON m.object_id = o.object_id
-        CROSS JOIN SystemTableMap stm
-        WHERE m.definition LIKE ''%'' + stm.SystemTable + ''%'';';
-        
-        EXEC (@SQL6);
-
-        -- Check Query Store settings
-        SET @SQL6 = '
-        USE ' + QUOTENAME(@DBName) + ';
-        SELECT 
-            DB_NAME() AS DatabaseName,
-            SUBSTRING(actual_state_desc,1,10) AS ActualState,
-            SUBSTRING(desired_state_desc,1,10) AS DesiredState,
-            SUBSTRING(query_capture_mode_desc,1,10) AS QueryCaptureMode,
-            SUBSTRING(size_based_cleanup_mode_desc,1,10) AS CleanupMode,
-            max_storage_size_mb,
-            stale_query_threshold_days
-        FROM sys.database_query_store_options;';
-        
-        EXEC (@SQL6);
+        FROM sys.sql_modules AS m
+        JOIN sys.objects     AS o ON m.object_id = o.object_id
+        CROSS JOIN SystemTableMap AS stm
+        WHERE m.definition LIKE N''%'' + stm.SystemTable + N''%'';';
+    BEGIN TRY
+        EXEC (@SQL);
     END TRY
     BEGIN CATCH
-        PRINT N'⚠️ Error accessing database: ' + QUOTENAME(@DBName);
-        PRINT ERROR_MESSAGE();
+        PRINT 'System-table scan failed in database ' + QUOTENAME(@DBName) + ': ' + ISNULL(ERROR_MESSAGE(), 'unknown error');
+    END CATCH;
+
+    ------------------------------------------------------------
+    -- B) Query Store settings (2016+) -- dynamic SQL only
+    --    No TRY/CATCH inside the string; we wrap EXEC in TRY/CATCH.
+    ------------------------------------------------------------
+    SET @SQL = N'
+        USE ' + QUOTENAME(@DBName) + N';
+        IF OBJECT_ID(N''sys.database_query_store_options'') IS NOT NULL
+        BEGIN
+            SELECT 
+                DB_NAME() AS DatabaseName,
+                SUBSTRING(actual_state_desc,            1, 20) AS ActualState,
+                SUBSTRING(desired_state_desc,           1, 20) AS DesiredState,
+                SUBSTRING(query_capture_mode_desc,      1, 20) AS QueryCaptureMode,
+                SUBSTRING(size_based_cleanup_mode_desc, 1, 20) AS CleanupMode,
+                max_storage_size_mb,
+                stale_query_threshold_days
+            FROM sys.database_query_store_options;
+        END
+        ELSE
+        BEGIN
+            PRINT N''Query Store not supported or not available in this database.'';
+        END';
+    BEGIN TRY
+        EXEC (@SQL);
+    END TRY
+    BEGIN CATCH
+        PRINT 'Query Store probe failed in database ' + QUOTENAME(@DBName) + ': ' + ISNULL(ERROR_MESSAGE(), 'unknown error');
     END CATCH;
 
     FETCH NEXT FROM db_cursor INTO @DBName;
@@ -2734,100 +3272,135 @@ END
 
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
-------------------------------------------------------------------------
--- Output results
-PRINT N'📋 DATABASES THAT ARE ACCESSING SYSTEM TABLES';
-SELECT
-    SUBSTRING(DatabaseName,1,60) AS DatabaseName,
-    SUBSTRING(SystemTable,1,20) AS SystemTable,
-    SUBSTRING(RecommendedView,1,20) AS USE_Substitute,
-    SUBSTRING(ReferencingObject,1,30) AS ReferencingObject,
-    SUBSTRING(ObjectType,1,30) AS ObjectType,
-    SUBSTRING(SchemaName,1,20) AS SchemaName
-FROM tempdb.dbo.SystemTableScanResults;
 
--- Optional: clean up
-DROP TABLE tempdb.dbo.SystemTableScanResults;
+-- Optional: clean up DB list
+IF OBJECT_ID('tempdb..#DbList') IS NOT NULL DROP TABLE #DbList;
 
   ----------------------------------------------------------------
  --Get Orphaned Users 14/08/25
 --------------------------------
+--------------------------------
+-- Orphaned Users (SQL 2008 → 2025-safe, AG-aware)
+--------------------------------
+SET NOCOUNT ON;
+
 -- Step 1: Create temp table for results
-SET NOCOUNT ON
 IF OBJECT_ID('tempdb..#orphaned_users') IS NOT NULL DROP TABLE #orphaned_users;
 
 CREATE TABLE #orphaned_users (
     DatabaseName SYSNAME,
     OrphanedUser SYSNAME,
-    UserType NVARCHAR(60)
+    UserType     NVARCHAR(60)
 );
 
--- Step 2: Create temp table with AG role info
+-- Step 2: Create temp table with role info (AG primary / non-AG / mirroring principal)
 IF OBJECT_ID('tempdb..#db_roles') IS NOT NULL DROP TABLE #db_roles;
+CREATE TABLE #db_roles
+(
+    DatabaseName       SYSNAME NOT NULL,
+    is_primary_replica INT     NOT NULL   -- 1=Primary, 0=Secondary, -1=Not in AG/Mirroring
+);
 
-SELECT 
-    d.name AS DatabaseName,
-    CASE 
-        WHEN drs.is_primary_replica = 1 THEN 1
-        WHEN drs.is_primary_replica = 0 THEN 0
-        ELSE -1 -- Not in AG
-    END AS is_primary_replica
-INTO #db_roles
-FROM sys.databases d
-LEFT JOIN sys.dm_hadr_database_replica_states drs 
-    ON d.database_id = drs.database_id
-WHERE d.state_desc = 'ONLINE'
-  AND d.name NOT IN ('master', 'model', 'msdb', 'tempdb', 'SSISDB'); -- exclude system DBs
+-- Populate #db_roles AG-aware if DMVs exist (SQL 2012+), else fallback (2008/R2 or non-AG)
+IF OBJECT_ID('master.sys.dm_hadr_database_replica_states') IS NOT NULL
+BEGIN
+    DECLARE @sqlRoles NVARCHAR(MAX);
+    SET @sqlRoles = N'
+        INSERT INTO #db_roles(DatabaseName, is_primary_replica)
+        SELECT 
+            d.name,
+            CASE WHEN drs.is_primary_replica = 1 THEN 1 ELSE 0 END
+        FROM sys.databases AS d
+        LEFT JOIN master.sys.dm_hadr_database_replica_states AS drs
+               ON d.database_id = drs.database_id
+              AND drs.is_local = 1
+        WHERE d.state_desc = ''ONLINE''
+          AND d.name NOT IN (''master'',''model'',''msdb'',''tempdb'',''SSISDB'');';
 
--- Step 3: Cursor to loop through only primary or non-AG user databases
-DECLARE @dbName6 NVARCHAR(128);
-DECLARE @stmt NVARCHAR(MAX);
+    BEGIN TRY
+        EXEC sp_executesql @sqlRoles;
+    END TRY
+    BEGIN CATCH
+        -- Fallback: treat as non-AG
+        INSERT INTO #db_roles(DatabaseName, is_primary_replica)
+        SELECT d.name, -1
+        FROM sys.databases AS d
+        WHERE d.state_desc = 'ONLINE'
+          AND d.name NOT IN ('master','model','msdb','tempdb','SSISDB');
+    END CATCH
+END
+ELSE
+BEGIN
+    -- SQL 2008 / non-AG path: use mirroring role when present (skip MIRROR=2), else mark as -1 (not in AG/mirroring)
+    INSERT INTO #db_roles(DatabaseName, is_primary_replica)
+    SELECT 
+        d.name,
+        CASE 
+            WHEN dm.mirroring_guid IS NOT NULL AND dm.mirroring_role = 1 THEN 1  -- PRINCIPAL
+            WHEN dm.mirroring_guid IS NOT NULL AND dm.mirroring_role = 2 THEN 0  -- MIRROR
+            ELSE -1
+        END
+    FROM sys.databases AS d
+    LEFT JOIN sys.database_mirroring AS dm
+           ON dm.database_id = d.database_id
+    WHERE d.state_desc = 'ONLINE'
+      AND d.name NOT IN ('master','model','msdb','tempdb','SSISDB');
+END
 
-DECLARE db_cursor CURSOR FOR
-SELECT DatabaseName
-FROM #db_roles
-WHERE is_primary_replica IN (1, -1); -- primary or not in AG
+-- Step 3: Cursor to loop only primary or non-AG/mirroring user databases
+DECLARE @dbName6 SYSNAME;
+DECLARE @stmt    NVARCHAR(MAX);
+
+DECLARE db_cursor CURSOR LOCAL FAST_FORWARD FOR
+    SELECT DatabaseName
+    FROM #db_roles
+    WHERE is_primary_replica IN (1, -1);  -- primary or not in AG/mirroring
 
 OPEN db_cursor;
 FETCH NEXT FROM db_cursor INTO @dbName6;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    SET @stmt = '
-    INSERT INTO #orphaned_users (DatabaseName, OrphanedUser, UserType)
-    SELECT 
-        ''' + @dbName6 + ''' AS [DatabaseName],
-        dp.name AS [OrphanedUser],
-        dp.type_desc AS [UserType]
-    FROM [' + @dbName6 + '].sys.database_principals dp
-    LEFT JOIN sys.server_principals sp ON dp.sid = sp.sid
-    WHERE dp.type IN (''S'', ''U'')
-      AND sp.sid IS NULL
-      AND dp.sid IS NOT NULL
-      AND dp.name NOT IN (''guest'', ''INFORMATION_SCHEMA'', ''sys'', ''dbo'');';
+    -- Parameterized dynamic SQL to avoid quoting issues
+    SET @stmt = N'
+        INSERT INTO #orphaned_users (DatabaseName, OrphanedUser, UserType)
+        SELECT 
+            @DbNameOut AS [DatabaseName],
+            dp.name     AS [OrphanedUser],
+            dp.type_desc AS [UserType]
+        FROM ' + QUOTENAME(@dbName6) + N'.sys.database_principals AS dp
+        LEFT JOIN sys.server_principals AS sp
+          ON dp.sid = sp.sid
+        WHERE dp.type IN (N''S'', N''U'')
+          AND sp.sid IS NULL
+          AND dp.sid IS NOT NULL
+          AND dp.name NOT IN (N''guest'', N''INFORMATION_SCHEMA'', N''sys'', N''dbo'');';
 
     BEGIN TRY
-        EXEC (@stmt);
+        EXEC sp_executesql @stmt, N'@DbNameOut SYSNAME', @DbNameOut = @dbName6;
     END TRY
     BEGIN CATCH
-        PRINT 'Error accessing database [' + @dbName + ']: ' + ERROR_MESSAGE();
+        PRINT 'Error accessing database [' + QUOTENAME(@dbName6) + ']: ' + ISNULL(ERROR_MESSAGE(), 'unknown error');
     END CATCH;
 
     FETCH NEXT FROM db_cursor INTO @dbName6;
-END;
+END
 
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
-PRINT 'ORPHANED USERS'
+
+PRINT 'ORPHANED USERS';
 
 -- Step 4: Return only real orphaned users
-SELECT SUBSTRING(DatabaseName,1,50)AS DatabaseName,
-       SUBSTRING(OrphanedUser,1,20) AS OrphanedUser
-FROM #orphaned_users;
+SELECT 
+    SUBSTRING(DatabaseName, 1, 50) AS DatabaseName,
+    SUBSTRING(OrphanedUser, 1, 50) AS OrphanedUser
+FROM #orphaned_users
+ORDER BY DatabaseName, OrphanedUser;
 
--- Cleanup
-DROP TABLE #db_roles;
-DROP TABLE #orphaned_users;
+-- Cleanup (2008-safe)
+IF OBJECT_ID('tempdb..#db_roles')       IS NOT NULL DROP TABLE #db_roles;
+IF OBJECT_ID('tempdb..#orphaned_users') IS NOT NULL DROP TABLE #orphaned_users;
 
 ---------------------------------------------------
 --Databases with wrong owner found
@@ -2977,22 +3550,3 @@ WHERE
 --------------------------------------------------------------------------------------------
 PRINT N'📊 REPORT HAS NOW COMPLETED. RAN  ON ----> ' + CAST(getdate()AS VARCHAR(20))
 ---------REPORT END---------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
