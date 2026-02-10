@@ -1,0 +1,490 @@
+--PERFORMANCE HINTS
+--10/02/26
+--exec dbo.sp_PerfHints_24h
+
+USE master;
+GO
+IF OBJECT_ID('dbo.sp_PerfHints_24h') IS NOT NULL
+    DROP PROCEDURE dbo.sp_PerfHints_24h;
+GO
+
+CREATE PROCEDURE dbo.sp_PerfHints_24h
+    @HoursBack    int  = 24,   -- historical window for QDS
+    @TopN         int  = 50,   -- internal ranking lists
+    @ShowContext  bit  = 0     -- optionally output context tables (#QDS, clerks)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Since datetime2(3) = DATEADD(hour, -@HoursBack, SYSDATETIME());
+
+    /* -------------------------------
+       Thresholds (tune as you wish)
+       ------------------------------- */
+    DECLARE
+        @MinOsFreeMB               int    = 10240,    -- warn if OS free < 10 GB
+        @MinPLE                    int    = 600,      -- warn if any node PLE < 600
+        @Clerk_Reservations_MB     int    = 8192,     -- MEMORYCLERK_SQLQERESERVATIONS >= 8 GB
+        @Clerk_Columnstore_MB      int    = 4096,     -- Columnstore pool >= 4 GB
+        @Clerk_SchemaMgr_MB        int    = 2048,     -- SCHEMAMGR >= 2 GB
+        @SingleUsePlanPct_High     int    = 50,       -- optimize for ad hoc threshold
+        @LogicalReadsHigh          bigint = 10000000; -- “very high” avg logical reads/statement
+
+    /* ---------------------------------
+       Recommendation sink
+       --------------------------------- */
+    IF OBJECT_ID('tempdb..#Recommendations') IS NOT NULL DROP TABLE #Recommendations;
+    CREATE TABLE #Recommendations
+    (
+        Severity  varchar(10),
+        Area      varchar(40),
+        Finding   nvarchar(400),
+        Evidence  nvarchar(4000),
+        Action    nvarchar(4000),
+        TSQL      nvarchar(max)
+    );
+
+    /* ---------------------------------
+       Find QDS-enabled DBs
+       --------------------------------- */
+    IF OBJECT_ID('tempdb..#QSDB') IS NOT NULL DROP TABLE #QSDB;
+    CREATE TABLE #QSDB
+    (
+        name sysname NOT NULL,
+        actual_state_desc nvarchar(60) NULL
+    );
+
+    DECLARE @db sysname, @cmd nvarchar(max);
+
+    DECLARE dbs CURSOR LOCAL FAST_FORWARD FOR
+    SELECT name
+    FROM sys.databases
+    WHERE is_query_store_on = 1
+      AND state = 0
+      AND database_id > 4;
+
+    OPEN dbs;
+    FETCH NEXT FROM dbs INTO @db;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @cmd = N'USE ' + QUOTENAME(@db) + N';
+            SELECT DB_NAME(), actual_state_desc
+            FROM sys.database_query_store_options;';
+        INSERT #QSDB(name, actual_state_desc)
+        EXEC sp_executesql @cmd;
+
+        FETCH NEXT FROM dbs INTO @db;
+    END
+    CLOSE dbs; DEALLOCATE dbs;
+
+    /* ---------------------------------
+       Pull last @HoursBack of QDS stats (grant-safe)
+       --------------------------------- */
+    IF OBJECT_ID('tempdb..#QDS') IS NOT NULL DROP TABLE #QDS;
+    CREATE TABLE #QDS
+    (
+        database_name sysname NOT NULL,
+        query_id bigint NOT NULL,
+        plan_id  bigint NOT NULL,
+        last_execution_time datetime2(3) NULL,
+        avg_cpu_time bigint NULL,
+        max_cpu_time bigint NULL,
+        avg_duration bigint NULL,
+        max_duration bigint NULL,
+        avg_logical_io_reads bigint NULL,
+        max_logical_io_reads bigint NULL,
+        count_executions bigint NULL,
+        query_sql_text nvarchar(max) NULL
+    );
+
+    DECLARE dbs2 CURSOR LOCAL FAST_FORWARD FOR
+    SELECT name FROM #QSDB;
+    OPEN dbs2;
+    FETCH NEXT FROM dbs2 INTO @db;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @cmd = N'
+        USE ' + QUOTENAME(@db) + N';
+        INSERT #QDS
+        SELECT
+            DB_NAME(), qsp.query_id, qsp.plan_id,
+            qsrs.last_execution_time,
+            qsrs.avg_cpu_time, qsrs.max_cpu_time,
+            qsrs.avg_duration, qsrs.max_duration,
+            qsrs.avg_logical_io_reads, qsrs.max_logical_io_reads,
+            qsrs.count_executions,
+            qsqt.query_sql_text
+        FROM sys.query_store_runtime_stats               AS qsrs
+        JOIN sys.query_store_runtime_stats_interval      AS rsi
+          ON qsrs.runtime_stats_interval_id = rsi.runtime_stats_interval_id
+        JOIN sys.query_store_plan                        AS qsp
+          ON qsrs.plan_id = qsp.plan_id
+        JOIN sys.query_store_query                       AS qsq
+          ON qsp.query_id = qsq.query_id
+        JOIN sys.query_store_query_text                  AS qsqt
+          ON qsq.query_text_id = qsqt.query_text_id
+        WHERE rsi.start_time >= @Since;';
+        EXEC sp_executesql @cmd, N'@Since datetime2(3)', @Since=@Since;
+
+        FETCH NEXT FROM dbs2 INTO @db;
+    END
+    CLOSE dbs2; DEALLOCATE dbs2;
+
+    /* ---------------------------------
+       Live signals (DMVs)
+       --------------------------------- */
+    DECLARE
+        @LockedPagesMB    bigint = (SELECT locked_page_allocations_kb/1024.0 FROM sys.dm_os_process_memory),
+        @SqlMemMB         bigint = (SELECT physical_memory_in_use_kb/1024.0 FROM sys.dm_os_process_memory),
+        @OsTotalMB        bigint = (SELECT total_physical_memory_kb/1024.0 FROM sys.dm_os_sys_memory),
+        @OsAvailMB        bigint = (SELECT available_physical_memory_kb/1024.0 FROM sys.dm_os_sys_memory);
+
+    DECLARE
+        @MaxServerMemMB   int = (SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'max server memory (MB)'),
+        @Ctfp             int = (SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'cost threshold for parallelism'),
+        @MaxDOP           int = (SELECT CAST(value_in_use AS int) FROM sys.configurations WHERE name = 'max degree of parallelism');
+
+    DECLARE @SingleUsePct decimal(5,2);
+    SELECT @SingleUsePct = 
+      100.0 * SUM(CASE WHEN usecounts = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0)
+    FROM sys.dm_exec_cached_plans
+    WHERE cacheobjtype = 'Compiled Plan';
+
+    DECLARE @MinPLE_Current bigint =
+    (
+        SELECT MIN(cntr_value)
+        FROM sys.dm_os_performance_counters
+        WHERE counter_name = 'Page life expectancy' AND object_name LIKE '%Buffer Node%'
+    );
+
+    DECLARE
+        @MemGrantsPending int = ISNULL((
+            SELECT MAX(cntr_value) FROM sys.dm_os_performance_counters
+            WHERE counter_name='Memory Grants Pending' AND object_name LIKE '%Memory Manager%'
+        ),0),
+        @MemGrantsOutstanding int = ISNULL((
+            SELECT MAX(cntr_value) FROM sys.dm_os_performance_counters
+            WHERE counter_name='Memory Grants Outstanding' AND object_name LIKE '%Memory Manager%'
+        ),0);
+
+    DECLARE @StolenPages bigint, @DbPages bigint;
+    SELECT
+        @StolenPages = SUM(CASE WHEN counter_name='Stolen pages' THEN cntr_value END),
+        @DbPages     = SUM(CASE WHEN counter_name='Database pages' THEN cntr_value END)
+    FROM sys.dm_os_performance_counters
+    WHERE object_name LIKE '%Buffer Manager%'
+      AND counter_name IN ('Stolen pages','Database pages');
+
+    IF OBJECT_ID('tempdb..#Clerks') IS NOT NULL DROP TABLE #Clerks;
+    SELECT type, pages_mb = pages_kb/1024.0
+    INTO #Clerks
+    FROM sys.dm_os_memory_clerks
+    WHERE pages_kb > 0;
+
+    DECLARE
+        @ReservationsMB    decimal(18,1) = ISNULL((SELECT pages_mb FROM #Clerks WHERE type='MEMORYCLERK_SQLQERESERVATIONS'),0),
+        @ColumnstoreMB     decimal(18,1) = ISNULL((SELECT pages_mb FROM #Clerks WHERE type='CACHESTORE_COLUMNSTOREOBJECTPOOL'),0),
+        @SchemaMgrMB       decimal(18,1) = ISNULL((SELECT pages_mb FROM #Clerks WHERE type='USERSTORE_SCHEMAMGR'),0);
+
+    /* ---------------------------------
+       DB-scoped configs (grant feedback)
+       --------------------------------- */
+    IF OBJECT_ID('tempdb..#DBCfg') IS NOT NULL DROP TABLE #DBCfg;
+    CREATE TABLE #DBCfg
+    (
+        database_name sysname,
+        row_mgf_on bit NULL,
+        batch_mgf_on bit NULL
+    );
+
+    DECLARE dbs3 CURSOR LOCAL FAST_FORWARD FOR
+    SELECT name FROM #QSDB;
+    OPEN dbs3;
+    FETCH NEXT FROM dbs3 INTO @db;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @cmd = N'
+        USE ' + QUOTENAME(@db) + N';
+        DECLARE @row bit = NULL, @batch bit = NULL;
+        IF OBJECT_ID(''sys.database_scoped_configurations'') IS NOT NULL
+        BEGIN
+            SELECT @row = CASE WHEN name = ''ROW_MODE_MEMORY_GRANT_FEEDBACK''   AND value = 1 THEN 1 END
+            FROM sys.database_scoped_configurations WHERE name = ''ROW_MODE_MEMORY_GRANT_FEEDBACK'';
+            SELECT @batch = CASE WHEN name = ''BATCH_MODE_MEMORY_GRANT_FEEDBACK'' AND value = 1 THEN 1 END
+            FROM sys.database_scoped_configurations WHERE name = ''BATCH_MODE_MEMORY_GRANT_FEEDBACK'';
+        END
+        SELECT DB_NAME(), ISNULL(@row,0), ISNULL(@batch,0);';
+        INSERT #DBCfg(database_name, row_mgf_on, batch_mgf_on)
+        EXEC sp_executesql @cmd;
+
+        FETCH NEXT FROM dbs3 INTO @db;
+    END
+    CLOSE dbs3; DEALLOCATE dbs3;
+
+    /* ---------------------------------
+       Rule Engine — insert recommendations
+       (use '+' string concatenation only)
+       --------------------------------- */
+    DECLARE @ev nvarchar(4000);
+
+    -- LPIM off
+    IF ISNULL(@LockedPagesMB,0) = 0
+    BEGIN
+        SET @ev = N'locked_page_allocations_kb=0; SQL used ~' + CONVERT(nvarchar(30), @SqlMemMB) + N' MB; OS free ~' + CONVERT(nvarchar(30), @OsAvailMB) + N' MB';
+        INSERT #Recommendations
+        SELECT 'High','Config/Memory','Locked Pages in Memory is OFF',
+               @ev,
+               'Enable LPIM to prevent buffer pool paging and stabilize PLE; restart SQL after change.',
+               N'-- Grant LPIM to the SQL service account via Local Security Policy and restart
+-- Verify after restart:
+SELECT locked_page_allocations_kb FROM sys.dm_os_process_memory;';
+    END
+
+    -- Max server memory too high for OS headroom
+    IF @OsAvailMB < @MinOsFreeMB
+    BEGIN
+        SET @ev = N'OS free MB ~' + CONVERT(nvarchar(30), @OsAvailMB) + N' (< ' + CONVERT(nvarchar(30), @MinOsFreeMB) + N' threshold). SQL MaxServerMem=' + CONVERT(nvarchar(30), @MaxServerMemMB) + N' MB';
+        INSERT #Recommendations
+        SELECT 'High','Config/Memory','Low OS free memory under load',
+               @ev,
+               'Lower max server memory to leave 10–16 GB for OS/agents on a 128 GB host.',
+               N'EXEC sys.sp_configure ''show advanced options'', 1; RECONFIGURE;
+EXEC sys.sp_configure ''max server memory (MB)'', <NewValueMB>; RECONFIGURE;';
+    END
+
+    -- PLE low
+    IF @MinPLE_Current IS NOT NULL AND @MinPLE_Current < @MinPLE
+    BEGIN
+        SET @ev = N'Min PLE across nodes ~' + CONVERT(nvarchar(30), @MinPLE_Current)
+                + N' (< ' + CONVERT(nvarchar(30), @MinPLE) + N'). Stolen vs DB pages: '
+                + CONVERT(nvarchar(30), @StolenPages) + N' vs ' + CONVERT(nvarchar(30), @DbPages);
+        INSERT #Recommendations
+        SELECT 'High','PLE','Low Page Life Expectancy (current)',
+               @ev,
+               'Reduce buffer churn (indexing/report predicates) and shrink stolen consumers (memory grants, columnstore).',
+               N'-- Inspect top logical/physical readers in Query Store and add covering/filtered indexes.
+-- Reduce MAXDOP on grant-heavy queries and enable Memory Grant Feedback.';
+    END
+
+    -- Memory Grants Pending
+    IF @MemGrantsPending > 0
+    BEGIN
+        SET @ev = N'Pending=' + CONVERT(nvarchar(30), @MemGrantsPending) + N', Outstanding=' + CONVERT(nvarchar(30), @MemGrantsOutstanding);
+        INSERT #Recommendations
+        SELECT 'High','Memory Grants','Memory Grants Pending > 0 (active memory pressure)',
+               @ev,
+               'Enable Memory Grant Feedback; fix stats; reduce DOP; cap worst offenders with MAX_GRANT_PERCENT.',
+               N'ALTER DATABASE SCOPED CONFIGURATION SET BATCH_MODE_MEMORY_GRANT_FEEDBACK = ON;
+ALTER DATABASE SCOPED CONFIGURATION SET ROW_MODE_MEMORY_GRANT_FEEDBACK   = ON; -- SQL 2019+
+-- Per-query caps:
+-- OPTION (MAX_GRANT_PERCENT = 10, MAXDOP 4);';
+    END
+
+    -- Stolen pages dominating
+    IF @StolenPages IS NOT NULL AND @DbPages IS NOT NULL AND @StolenPages > @DbPages
+    BEGIN
+        SET @ev = N'Stolen=' + CONVERT(nvarchar(30), @StolenPages) + N' > DBPages=' + CONVERT(nvarchar(30), @DbPages);
+        INSERT #Recommendations
+        SELECT 'High','Memory/Stolen','Stolen pages exceed Database pages',
+               @ev,
+               'Shrink stolen consumers: oversized memory grants, columnstore pool, SCHEMAMGR; enable LPIM; ensure OS headroom.',
+               N'-- Live top grants:
+SELECT TOP (20) requested_memory_kb, granted_memory_kb, used_memory_kb, r.dop, DB_NAME(r.database_id) AS dbname
+FROM sys.dm_exec_query_memory_grants mg
+JOIN sys.dm_exec_requests r ON mg.session_id=r.session_id AND mg.request_id=r.request_id
+ORDER BY requested_memory_kb DESC;';
+    END
+
+    -- Reservations clerk high
+    IF @ReservationsMB >= @Clerk_Reservations_MB
+    BEGIN
+        SET @ev = N'Reservations ~' + CONVERT(nvarchar(30), @ReservationsMB) + N' MB (>= ' + CONVERT(nvarchar(30), @Clerk_Reservations_MB) + N' MB)';
+        INSERT #Recommendations
+        SELECT 'High','Memory Grants','MEMORYCLERK_SQLQERESERVATIONS is high',
+               @ev,
+               'Reduce oversized grants: enable Memory Grant Feedback, refresh stats, lower MAXDOP, and cap offenders.',
+               N'ALTER DATABASE SCOPED CONFIGURATION SET BATCH_MODE_MEMORY_GRANT_FEEDBACK = ON;
+ALTER DATABASE SCOPED CONFIGURATION SET ROW_MODE_MEMORY_GRANT_FEEDBACK   = ON; -- if 2019+
+-- OPTION (MAX_GRANT_PERCENT = 10, MAXDOP 4) on offenders.';
+    END
+
+    -- Columnstore pool high
+    IF @ColumnstoreMB >= @Clerk_Columnstore_MB
+    BEGIN
+        SET @ev = N'Columnstore pool ~' + CONVERT(nvarchar(30), @ColumnstoreMB) + N' MB (>= ' + CONVERT(nvarchar(30), @Clerk_Columnstore_MB) + N' MB)';
+        INSERT #Recommendations
+        SELECT 'Medium','Columnstore','Columnstore object pool is large (stolen memory)',
+               @ev,
+               'Lower DOP on CCI scans/rebuilds, avoid overlap, prefer REORGANIZE during peak, avoid SELECT * on CCI.',
+               N'ALTER INDEX ALL ON dbo.<YourCCI> REORGANIZE; -- lighter
+-- Or during off-peak:
+ALTER INDEX ALL ON dbo.<YourCCI> REBUILD WITH (MAXDOP = 4);
+-- Query hint for heavy CCI queries: OPTION (MAXDOP 4)';
+    END
+
+    -- SchemaMgr high
+    IF @SchemaMgrMB >= @Clerk_SchemaMgr_MB
+    BEGIN
+        SET @ev = N'SCHEMAMGR ~' + CONVERT(nvarchar(30), @SchemaMgrMB) + N' MB (>= ' + CONVERT(nvarchar(30), @Clerk_SchemaMgr_MB) + N' MB)';
+        INSERT #Recommendations
+        SELECT 'Medium','Metadata','USERSTORE_SCHEMAMGR is large (metadata/temp table churn)',
+               @ev,
+               'Reuse temp tables with stable schema; avoid dynamic SELECT INTO with varying shape; reduce create/drop in loops.',
+               N'-- Review procs creating many temp tables; reuse #temp with fixed schema; avoid SELECT * INTO #temp.';
+    END
+
+    -- Plan cache single-use high
+    IF @SingleUsePct IS NOT NULL AND @SingleUsePct >= @SingleUsePlanPct_High
+    BEGIN
+        SET @ev = N'Single-use compiled plans ~' + CONVERT(nvarchar(30), @SingleUsePct) + N'% (>= ' + CONVERT(nvarchar(30), @SingleUsePlanPct_High) + N'%)';
+        INSERT #Recommendations
+        SELECT 'Low','Plan Cache','High single-use compiled plans',
+               @ev,
+               'Enable optimize-for-ad-hoc workloads to reduce plan cache bloat.',
+               N'EXEC sys.sp_configure ''show advanced options'', 1; RECONFIGURE;
+EXEC sys.sp_configure ''optimize for ad hoc workloads'', 1; RECONFIGURE;';
+    END
+
+    -- Cost threshold low
+    IF @Ctfp < 30
+    BEGIN
+        SET @ev = N'Current cost threshold = ' + CONVERT(nvarchar(30), @Ctfp) + N' (< 30)';
+        INSERT #Recommendations
+        SELECT 'Medium','Parallelism','Low cost threshold for parallelism',
+               @ev,
+               'Raise to 30–50 to reduce unnecessary parallel queries that inflate memory grants.',
+               N'EXEC sys.sp_configure ''cost threshold for parallelism'', 40; RECONFIGURE;';
+    END
+
+    -- Instance MAXDOP guardrail
+    IF @MaxDOP > 8
+    BEGIN
+        SET @ev = N'Current MAXDOP = ' + CONVERT(nvarchar(30), @MaxDOP) + N' (> 8)';
+        INSERT #Recommendations
+        SELECT 'Low','Parallelism','High instance MAXDOP',
+               @ev,
+               'Consider MAXDOP 8 instance-wide and lower per query for grant-heavy workloads.',
+               N'EXEC sys.sp_configure ''max degree of parallelism'', 8; RECONFIGURE;';
+    END
+
+    -- DBs where Memory Grant Feedback is OFF (portable concatenation)
+    IF EXISTS (SELECT 1 FROM #DBCfg WHERE ISNULL(row_mgf_on,0)=0 OR ISNULL(batch_mgf_on,0)=0)
+    BEGIN
+        DECLARE @DbList nvarchar(max) = N'';
+        DECLARE @d sysname, @row_on bit, @batch_on bit;
+        DECLARE c CURSOR LOCAL FAST_FORWARD FOR
+        SELECT database_name, row_mgf_on, batch_mgf_on
+        FROM #DBCfg
+        WHERE ISNULL(row_mgf_on,0)=0 OR ISNULL(batch_mgf_on,0)=0;
+        OPEN c;
+        FETCH NEXT FROM c INTO @d, @row_on, @batch_on;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            SET @DbList = @DbList + CASE WHEN LEN(@DbList)>0 THEN N'; ' ELSE N'' END
+                         + @d
+                         + CASE WHEN ISNULL(@row_on,0)=0 THEN N': ROW_MGF_OFF' ELSE N'' END
+                         + CASE WHEN ISNULL(@batch_on,0)=0 THEN N' BATCH_MGF_OFF' ELSE N'' END;
+            FETCH NEXT FROM c INTO @d, @row_on, @batch_on;
+        END
+        CLOSE c; DEALLOCATE c;
+
+        INSERT #Recommendations
+        SELECT 'High','Memory Grants','Memory Grant Feedback is OFF in one or more databases',
+               ISNULL(@DbList, N'(none)'),
+               'Enable ROW and BATCH mode memory grant feedback to shrink oversized grants automatically.',
+               N'-- For each listed DB:
+ALTER DATABASE <DB> SCOPED CONFIGURATION SET BATCH_MODE_MEMORY_GRANT_FEEDBACK = ON;
+ALTER DATABASE <DB> SCOPED CONFIGURATION SET ROW_MODE_MEMORY_GRANT_FEEDBACK   = ON;';
+    END
+
+    /* ---------------------------------
+       Content-aware hints from QDS
+       --------------------------------- */
+    IF EXISTS (SELECT 1 FROM #QDS)
+    BEGIN
+        ;WITH TopReads AS
+        (
+            SELECT TOP (@TopN)
+                database_name, query_id, plan_id,
+                avg_logical_io_reads, last_execution_time, query_sql_text
+            FROM #QDS
+            ORDER BY avg_logical_io_reads DESC
+        )
+        INSERT #Recommendations
+        SELECT DISTINCT
+            CASE WHEN tr.avg_logical_io_reads >= @LogicalReadsHigh THEN 'High' ELSE 'Medium' END AS Severity,
+            'Indexing/Reads' AS Area,
+            'Very high logical reads (buffer churn)' AS Finding,
+            N'DB=' + tr.database_name
+            + N'; avg_logical_io_reads=' + CONVERT(nvarchar(30), tr.avg_logical_io_reads)
+            + N'; plan_id=' + CONVERT(nvarchar(30), tr.plan_id) AS Evidence,
+            'Add covering/filtered indexes to eliminate large scans; narrow SELECT list; push filters early.',
+            N'-- Add index(es) tailored to predicates/joins/return columns
+-- Example:
+-- CREATE INDEX IX_<table>_<cols> ON dbo.<table>(<predicate cols>) INCLUDE(<return cols>);'
+        FROM TopReads tr
+        WHERE tr.avg_logical_io_reads IS NOT NULL;
+
+        ;WITH R1 AS
+        (
+            SELECT database_name, query_id, SUM(1) AS hits
+            FROM
+            (
+                SELECT TOP (@TopN) database_name, query_id FROM #QDS ORDER BY avg_cpu_time DESC
+                UNION ALL
+                SELECT TOP (@TopN) database_name, query_id FROM #QDS ORDER BY avg_logical_io_reads DESC
+                UNION ALL
+                SELECT TOP (@TopN) database_name, query_id FROM #QDS ORDER BY avg_duration DESC
+            ) d
+            GROUP BY database_name, query_id
+        )
+        INSERT #Recommendations
+        SELECT
+            CASE WHEN r.hits >= 2 THEN 'High' ELSE 'Medium' END AS Severity,
+            'Hot Query' AS Area,
+            'Same query ranks across CPU/Reads/Duration' AS Finding,
+            N'DB=' + q.database_name + N'; hits=' + CONVERT(nvarchar(30), r.hits)
+              + N'; last_exec=' + CONVERT(varchar(19), q.last_execution_time, 120) AS Evidence,
+            'Tune this first: refresh stats, add better indexes, consider forcing a good plan, lower MAXDOP or cap grant if needed.',
+            N'-- In Query Store, review plans for this query_id and force the best plan if appropriate:
+-- EXEC sys.sp_query_store_force_plan @query_id = <id>, @plan_id = <good_plan_id>;
+-- Optionally cap:
+-- EXEC sys.sp_query_store_set_hints @query_id=<id>, @value = N''OPTION (MAXDOP 4, MAX_GRANT_PERCENT = 10)'';'
+        FROM R1 r
+        JOIN #QDS q
+          ON q.database_name = r.database_name AND q.query_id = r.query_id;
+    END
+    ELSE
+    BEGIN
+        INSERT #Recommendations
+        SELECT 'Low','Query Store','No Query Store data in the last window',
+               N'Window=' + CONVERT(nvarchar(10), @HoursBack) + N'h; ensure QDS is ON and queries ran.',
+               'Enable Query Store and rerun later or extend @HoursBack.',
+               N'ALTER DATABASE <DB> SET QUERY_STORE = ON; -- per database';
+    END
+
+    /* ---------------------------------
+       Output
+       --------------------------------- */
+    IF NOT EXISTS (SELECT 1 FROM #Recommendations)
+    BEGIN
+        INSERT #Recommendations
+        SELECT 'Low','General','No issues detected against current thresholds',
+               'Everything looks within target ranges for the last window.',
+               'Keep monitoring. Consider tightening thresholds if you want more sensitivity.',
+               NULL;
+    END
+
+    SELECT * FROM #Recommendations
+    ORDER BY CASE Severity WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, Area, Finding;
+
+    IF @ShowContext = 1
+    BEGIN
+        PRINT '--- Context: Clerks (MB) ---';
+        SELECT * FROM #Clerks ORDER BY pages_mb DESC;
+
+        PRINT '--- Context: QDS Top (raw sample) ---';
+        SELECT TOP (50) * FROM #QDS ORDER BY avg_cpu_time DESC;
+    END
+END
+GO
