@@ -1,0 +1,86 @@
+Instructions to export ssrs reports and import again
+15/02/2026
+-----------------------------------------------------
+1.create export folder
+ D:\SSRSExport
+2. create script ExportReports.rss
+
+Public Sub Main()
+    ExportFolder("/", "D:\SSRSExport")
+End Sub
+
+Public Sub ExportFolder(path As String, target As String)
+    Dim items() As CatalogItem = rs.ListChildren(path, False)
+
+    For Each item As CatalogItem In items
+        Dim itemPath As String = path & "/" & item.Name
+        Dim targetPath As String = target & "\" & item.Name
+
+        If item.Type = ItemTypeEnum.Folder Then
+            System.IO.Directory.CreateDirectory(targetPath)
+            ExportFolder(itemPath, targetPath)
+
+        ElseIf item.Type = ItemTypeEnum.Report Then
+            Dim definition() As Byte = rs.GetItemDefinition(itemPath)
+            System.IO.File.WriteAllBytes(targetPath & ".rdl", definition)
+
+        ElseIf item.Type = ItemTypeEnum.DataSource Then
+            Dim ds As DataSourceDefinition = rs.GetDataSourceContents(itemPath)
+            Dim xml As String = ds.ToString()
+            System.IO.File.WriteAllText(targetPath & ".xml", xml)
+
+        End If
+    Next
+End Sub
+
+3. from cmd line
+rs.exe -i ExportReports.rss -s http://YOURSERVER/reportserver
+
+IMPORT TO NEW reportingserver
+
+4. Create importReports.rss
+
+Public Sub Main()
+    UploadFolder("D:\SSRSExport", "/")
+End Sub
+
+Public Sub UploadFolder(source As String, target As String)
+    Dim dirs() As String = System.IO.Directory.GetDirectories(source)
+    Dim files() As String = System.IO.Directory.GetFiles(source)
+
+    ' Create folder in SSRS
+    If target <> "/" Then
+        Try
+            rs.CreateFolder(System.IO.Path.GetFileName(source), System.IO.Path.GetDirectoryName(target), Nothing)
+        Catch ex As Exception
+            ' Folder may already exist
+        End Try
+    End If
+
+    ' Upload files
+    For Each file As String In files
+        If file.ToLower().EndsWith(".rdl") Then
+            Dim bytes() As Byte = System.IO.File.ReadAllBytes(file)
+            Dim name As String = System.IO.Path.GetFileNameWithoutExtension(file)
+            rs.CreateReport(name, target, True, bytes, Nothing)
+
+        ElseIf file.ToLower().EndsWith(".xml") Then
+            Dim xml As String = System.IO.File.ReadAllText(file)
+            Dim name As String = System.IO.Path.GetFileNameWithoutExtension(file)
+            Dim ds As New DataSourceDefinition()
+            ds = CType(rs.ParseDataSourceDefinition(xml), DataSourceDefinition)
+            rs.CreateDataSource(name, target, True, ds, Nothing)
+        End If
+    Next
+
+    ' Recurse into subfolders
+    For Each dir As String In dirs
+        Dim folderName As String = System.IO.Path.GetFileName(dir)
+        UploadFolder(dir, target & "/" & folderName)
+    Next
+End Sub
+
+5. Cmdlne
+rs.exe -i ImportReports.rss -s http://NEWSERVER/reportserver
+
+
