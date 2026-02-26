@@ -1,0 +1,24 @@
+--historical deadlocks
+--25/02/2026
+---------------------------------------
+DECLARE @path nvarchar(260);
+
+-- Find the folder where system_health .xel files live
+SELECT @path = path
+FROM sys.dm_os_server_diagnostics_log_configurations;
+
+-- Read deadlock reports from system_health files
+;WITH Deadlocks AS
+(
+    SELECT
+        CAST(event_data AS xml) AS DeadlockXml
+    FROM sys.fn_xe_file_target_read_file(@path + N'\system_health*.xel', NULL, NULL, NULL)
+    WHERE object_name = N'xml_deadlock_report'
+)
+SELECT
+    DeadlockXml.value('(/event/@timestamp)[1]', 'datetime2') AS UtcTime,
+    DeadlockXml
+FROM Deadlocks
+WHERE DeadlockXml.value('(/event/@timestamp)[1]', 'datetime2')
+      >= DATEADD(DAY, -14, SYSUTCDATETIME())
+ORDER BY UtcTime DESC;
