@@ -1,0 +1,266 @@
+/* ===========================================================
+   24h Performance Dashboard (Query Store + Memory/PLE) — Grant-safe
+   Works on SQL Server 2016+ (Query Store required in target DBs)
+   Removes all QDS memory-grant column references to avoid errors.
+   Author: M365 Copilot (for Adrian)
+   =========================================================== */
+
+SET NOCOUNT ON;
+
+DECLARE @HoursBack int = 24;         -- Change as needed
+DECLARE @Since     datetime2(3) = DATEADD(hour, -@HoursBack, SYSDATETIME());
+
+/* -------------------------------
+   0) Discover Query Store databases
+   ------------------------------- */
+IF OBJECT_ID('tempdb..#QSDB') IS NOT NULL DROP TABLE #QSDB;
+CREATE TABLE #QSDB
+(
+    name sysname NOT NULL,               -- database name
+    actual_state_desc nvarchar(60) NULL  -- per-db QDS state (for info)
+);
+
+DECLARE @db sysname, @cmd nvarchar(max);
+
+DECLARE dbs CURSOR LOCAL FAST_FORWARD FOR
+SELECT name
+FROM sys.databases
+WHERE is_query_store_on = 1    -- Query Store enabled
+  AND state = 0                -- ONLINE
+  AND database_id > 4;         -- Skip system DBs
+
+OPEN dbs;
+FETCH NEXT FROM dbs INTO @db;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- query sys.database_query_store_options in that DB context
+    SET @cmd = N'USE ' + QUOTENAME(@db) + N';
+        SELECT DB_NAME(), actual_state_desc
+        FROM sys.database_query_store_options;';
+    INSERT #QSDB(name, actual_state_desc)
+    EXEC sp_executesql @cmd;
+
+    FETCH NEXT FROM dbs INTO @db;
+END
+CLOSE dbs; DEALLOCATE dbs;
+
+IF NOT EXISTS (SELECT 1 FROM #QSDB)
+BEGIN
+    PRINT 'No databases with Query Store enabled and ONLINE were found.';
+    RETURN;
+END
+
+SELECT * FROM #QSDB ORDER BY name;  -- sanity view
+
+/* ---------------------------------------------------------
+   1) Gather 24h Query Store metrics across those databases
+   --------------------------------------------------------- */
+IF OBJECT_ID('tempdb..#QDS') IS NOT NULL DROP TABLE #QDS;
+CREATE TABLE #QDS
+(
+    database_name sysname NOT NULL,
+    query_id bigint NOT NULL,
+    plan_id  bigint NOT NULL,
+    last_execution_time datetime2(3) NULL,
+    avg_cpu_time bigint NULL,
+    max_cpu_time bigint NULL,
+    avg_duration bigint NULL,
+    max_duration bigint NULL,
+    avg_logical_io_reads bigint NULL,
+    max_logical_io_reads bigint NULL,
+    avg_physical_io_reads bigint NULL, -- optional if present on build
+    max_physical_io_reads bigint NULL, -- optional if present on build
+    count_executions bigint NULL,
+    query_sql_text nvarchar(max) NULL
+);
+
+DECLARE dbs2 CURSOR LOCAL FAST_FORWARD FOR
+SELECT name FROM #QSDB;
+OPEN dbs2;
+FETCH NEXT FROM dbs2 INTO @db;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    /* Conditionally include phys reads if the columns exist on this build */
+    SET @cmd = N'
+    USE ' + QUOTENAME(@db) + N';
+
+    DECLARE @HasPhysReads bit =
+        CASE WHEN COL_LENGTH(''sys.query_store_runtime_stats'',''avg_physical_io_reads'') IS NOT NULL
+             THEN 1 ELSE 0 END;
+
+    IF @HasPhysReads = 1
+    BEGIN
+        INSERT #QDS
+        SELECT
+            DB_NAME(), qsp.query_id, qsp.plan_id,
+            qsrs.last_execution_time,
+            qsrs.avg_cpu_time, qsrs.max_cpu_time,
+            qsrs.avg_duration, qsrs.max_duration,
+            qsrs.avg_logical_io_reads, qsrs.max_logical_io_reads,
+            qsrs.avg_physical_io_reads, qsrs.max_physical_io_reads,
+            qsrs.count_executions,
+            qsqt.query_sql_text
+        FROM sys.query_store_runtime_stats               AS qsrs
+        JOIN sys.query_store_runtime_stats_interval      AS rsi
+          ON qsrs.runtime_stats_interval_id = rsi.runtime_stats_interval_id
+        JOIN sys.query_store_plan                        AS qsp
+          ON qsrs.plan_id = qsp.plan_id
+        JOIN sys.query_store_query                       AS qsq
+          ON qsp.query_id = qsq.query_id
+        JOIN sys.query_store_query_text                  AS qsqt
+          ON qsq.query_text_id = qsqt.query_text_id
+        WHERE rsi.start_time >= @Since;
+    END
+    ELSE
+    BEGIN
+        INSERT #QDS
+        SELECT
+            DB_NAME(), qsp.query_id, qsp.plan_id,
+            qsrs.last_execution_time,
+            qsrs.avg_cpu_time, qsrs.max_cpu_time,
+            qsrs.avg_duration, qsrs.max_duration,
+            qsrs.avg_logical_io_reads, qsrs.max_logical_io_reads,
+            NULL, NULL,                                   -- phys reads not available
+            qsrs.count_executions,
+            qsqt.query_sql_text
+        FROM sys.query_store_runtime_stats               AS qsrs
+        JOIN sys.query_store_runtime_stats_interval      AS rsi
+          ON qsrs.runtime_stats_interval_id = rsi.runtime_stats_interval_id
+        JOIN sys.query_store_plan                        AS qsp
+          ON qsrs.plan_id = qsp.plan_id
+        JOIN sys.query_store_query                       AS qsq
+          ON qsp.query_id = qsq.query_id
+        JOIN sys.query_store_query_text                  AS qsqt
+          ON qsq.query_text_id = qsqt.query_text_id
+        WHERE rsi.start_time >= @Since;
+    END
+    ';
+    EXEC sp_executesql @cmd, N'@Since datetime2(3)', @Since=@Since;
+
+    FETCH NEXT FROM dbs2 INTO @db;
+END
+CLOSE dbs2; DEALLOCATE dbs2;
+
+/* ---------------------------------------
+   2) Top offenders in the last @HoursBack h
+   --------------------------------------- */
+PRINT '===== Top CPU (avg) in last ' + CAST(@HoursBack as varchar(10)) + 'h =====';
+SELECT TOP (50)
+    database_name,
+    avg_cpu_ms = CAST(avg_cpu_time/1000.0 AS decimal(18,2)),
+    max_cpu_ms = CAST(max_cpu_time/1000.0 AS decimal(18,2)),
+    count_executions,
+    last_execution_time,
+    LEFT(query_sql_text, 4000) AS query_sql_text,
+    plan_id, query_id
+FROM #QDS
+ORDER BY avg_cpu_time DESC;
+
+PRINT '===== Top Duration (avg) in last ' + CAST(@HoursBack as varchar(10)) + 'h =====';
+SELECT TOP (50)
+    database_name,
+    avg_duration_ms = CAST(avg_duration/1000.0 AS decimal(18,2)),
+    max_duration_ms = CAST(max_duration/1000.0 AS decimal(18,2)),
+    count_executions,
+    last_execution_time,
+    LEFT(query_sql_text, 4000) AS query_sql_text,
+    plan_id, query_id
+FROM #QDS
+ORDER BY avg_duration DESC;
+
+PRINT '===== Top Logical Reads (avg) in last ' + CAST(@HoursBack as varchar(10)) + 'h =====';
+SELECT TOP (50)
+    database_name,
+    avg_logical_io_reads, max_logical_io_reads,
+    count_executions,
+    last_execution_time,
+    LEFT(query_sql_text, 4000) AS query_sql_text,
+    plan_id, query_id
+FROM #QDS
+ORDER BY avg_logical_io_reads DESC;
+
+PRINT '===== Top Physical Reads (avg if available) in last ' + CAST(@HoursBack as varchar(10)) + 'h =====';
+SELECT TOP (50)
+    database_name,
+    avg_physical_io_reads, max_physical_io_reads,
+    count_executions,
+    last_execution_time,
+    LEFT(query_sql_text, 4000) AS query_sql_text,
+    plan_id, query_id
+FROM #QDS
+ORDER BY ISNULL(avg_physical_io_reads, 0) DESC;
+
+PRINT '===== Consolidated (CPU + Duration + Reads) per query_id in last ' + CAST(@HoursBack as varchar(10)) + 'h =====';
+SELECT TOP (50)
+    database_name,
+    query_id,
+    total_cpu_ms      = SUM(CAST(avg_cpu_time AS bigint)),
+    total_duration_ms = SUM(CAST(avg_duration AS bigint)),
+    total_reads       = SUM(CAST(avg_logical_io_reads AS bigint)),
+    exec_count        = SUM(CAST(count_executions AS bigint)),
+    last_exec_time    = MAX(last_execution_time),
+    sample_text       = LEFT(MAX(query_sql_text), 4000)
+FROM #QDS
+GROUP BY database_name, query_id
+ORDER BY total_cpu_ms DESC;
+
+/* -----------------------------------------------
+   3) Live pressure signals (current point-in-time)
+   ----------------------------------------------- */
+PRINT '===== Live: PLE per NUMA Node =====';
+SELECT instance_name AS numa_node, cntr_value AS PLE
+FROM sys.dm_os_performance_counters
+WHERE counter_name = 'Page life expectancy'
+  AND object_name LIKE '%Buffer Node%';
+
+PRINT '===== Live: Memory Grants Pending / Outstanding =====';
+SELECT 
+  pending = (SELECT ISNULL(MAX(cntr_value),0) FROM sys.dm_os_performance_counters 
+             WHERE counter_name='Memory Grants Pending' AND object_name LIKE '%Memory Manager%'),
+  outstanding = (SELECT ISNULL(MAX(cntr_value),0) FROM sys.dm_os_performance_counters 
+                 WHERE counter_name='Memory Grants Outstanding' AND object_name LIKE '%Memory Manager%');
+
+PRINT '===== Live: Buffer vs Stolen vs Free (pages) =====';
+SELECT 
+    stolen_pages   = SUM(CASE WHEN counter_name = 'Stolen pages'  THEN cntr_value END),
+    database_pages = SUM(CASE WHEN counter_name = 'Database pages' THEN cntr_value END),
+    free_pages     = SUM(CASE WHEN counter_name = 'Free pages'    THEN cntr_value END)
+FROM sys.dm_os_performance_counters
+WHERE object_name LIKE '%Buffer Manager%'
+  AND counter_name IN ('Stolen pages','Database pages','Free pages');
+
+PRINT '===== Live: Active / Queued Memory Grants (top 20) =====';
+SELECT TOP (20)
+    mg.session_id, mg.request_time, mg.grant_time,
+    requested_kb = mg.requested_memory_kb,
+    granted_kb   = mg.granted_memory_kb,
+    used_kb      = mg.used_memory_kb,
+    is_queued    = CASE WHEN mg.grant_time IS NULL THEN 1 ELSE 0 END,
+    dop          = r.dop,
+    r.status, r.command, r.wait_type, r.total_elapsed_time,
+    DB_NAME(r.database_id) AS dbname,
+    stmt_text = SUBSTRING(t.text, (r.statement_start_offset/2)+1,
+                (CASE WHEN r.statement_end_offset=-1
+                      THEN LEN(CONVERT(nvarchar(max), t.text))*2
+                      ELSE r.statement_end_offset END - r.statement_start_offset)/2+1)
+FROM sys.dm_exec_query_memory_grants AS mg
+JOIN sys.dm_exec_requests AS r
+  ON mg.session_id = r.session_id AND mg.request_id = r.request_id
+CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
+ORDER BY requested_kb DESC, mg.request_time ASC;
+
+PRINT '===== Live: Columnstore Object Pool (MB) =====';
+SELECT type, MB = pages_kb/1024.0
+FROM sys.dm_os_memory_clerks
+WHERE type = 'CACHESTORE_COLUMNSTOREOBJECTPOOL';
+
+PRINT '===== Live: Top Memory Clerks (MB) =====';
+SELECT TOP (30)
+    clerk_type = mc.type,
+    pages_mb   = mc.pages_kb/1024.0,
+    virtual_committed_mb = mc.virtual_memory_committed_kb/1024.0
+FROM sys.dm_os_memory_clerks AS mc
+WHERE mc.pages_kb > 0
+ORDER BY mc.pages_kb DESC;
+
+PRINT '===== Dashboard completed at ' + CONVERT(varchar(30), SYSDATETIME(), 121) + ' =====';
