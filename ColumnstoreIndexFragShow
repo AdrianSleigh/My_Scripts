@@ -1,0 +1,135 @@
+/*=========================================================
+  CCI “Fragmentation” (DeletedRows%) + Size + Time estimates
+  - FragmentationPercent = DeletedRows / TotalRows * 100
+  - UsedMB/ReservedMB based on dm_db_partition_stats (pages)
+  - EstRebuildMinutes: size-based (MB / throughput) * factor
+  - EstReorgMinutes: size-based but scaled by deleted% + delta RG pressure
+=========================================================*/
+
+SET NOCOUNT ON;
+
+-- ---- Tunables (adjust to your environment) ----------------
+DECLARE @RebuildMBps      decimal(10,2) = 200;  -- effective MB/s for rebuild
+DECLARE @RebuildFactor    decimal(10,2) = 1.80; -- overhead factor (CPU/log/etc.)
+
+DECLARE @ReorgMBps        decimal(10,2) = 300;  -- reorganize often lighter/faster
+DECLARE @ReorgFactor      decimal(10,2) = 1.20;
+
+DECLARE @MinReorgWorkPct  decimal(10,4) = 0.05; -- minimum 5% “work” even if deleted% tiny
+DECLARE @DeltaRGWorkMB    decimal(10,2) = 64;   -- extra “MB of work” per delta rowgroup (rule of thumb)
+-- ----------------------------------------------------------
+
+;WITH rg AS
+(
+    SELECT
+        r.object_id,
+        r.index_id,
+        r.partition_number,
+        SUM(r.total_rows)   AS TotalRows,
+        SUM(r.deleted_rows) AS DeletedRows,
+        SUM(CASE WHEN r.state_desc = 'COMPRESSED' THEN 1 ELSE 0 END) AS CompressedRG,
+        SUM(CASE WHEN r.state_desc IN ('OPEN','CLOSED') THEN 1 ELSE 0 END) AS DeltaRG,
+        SUM(CASE WHEN r.state_desc = 'OPEN'   THEN 1 ELSE 0 END) AS OpenRG,
+        SUM(CASE WHEN r.state_desc = 'CLOSED' THEN 1 ELSE 0 END) AS ClosedRG,
+        SUM(CASE WHEN r.trim_reason_desc IS NOT NULL AND r.trim_reason_desc <> 'NO_TRIM'
+                 THEN 1 ELSE 0 END) AS TrimmedRG
+    FROM sys.dm_db_column_store_row_group_physical_stats AS r
+    GROUP BY
+        r.object_id, r.index_id, r.partition_number
+),
+ps AS
+(
+    -- dm_db_partition_stats returns page counts per partition/index
+    SELECT
+        p.object_id,
+        p.index_id,
+        p.partition_number,
+        SUM(p.used_page_count)     AS used_pages,
+        SUM(p.reserved_page_count) AS reserved_pages
+    FROM sys.dm_db_partition_stats AS p
+    GROUP BY
+        p.object_id, p.index_id, p.partition_number
+)
+SELECT
+    s.name  AS SchemaName,
+    t.name  AS TableName,
+    i.name  AS IndexName,
+    rg.partition_number,
+
+    rg.TotalRows,
+    rg.DeletedRows,
+
+    CAST(rg.DeletedRows * 100.0 / NULLIF(rg.TotalRows, 0) AS decimal(9,2)) AS FragmentationPercent,
+
+    rg.CompressedRG,
+    rg.DeltaRG,
+    rg.OpenRG,
+    rg.ClosedRG,
+    rg.TrimmedRG,
+
+    CAST(ps.used_pages     * 8.0 / 1024.0 AS decimal(19,2)) AS UsedMB,
+    CAST(ps.reserved_pages * 8.0 / 1024.0 AS decimal(19,2)) AS ReservedMB,
+
+    -------------------------------------------------------------------
+    -- Estimate columns
+    -------------------------------------------------------------------
+    CAST(
+        (
+            (ps.used_pages * 8.0 / 1024.0)                -- UsedMB
+            / NULLIF(@RebuildMBps, 0)                     -- MB/s
+            * @RebuildFactor
+        ) / 60.0
+        AS decimal(19,2)
+    ) AS EstRebuildMinutes,
+
+    CAST(
+        (
+            (
+                -- Reorg “work” approx = UsedMB * max(deleted%, min%) + deltaRG overhead
+                (ps.used_pages * 8.0 / 1024.0)
+                * CASE
+                    WHEN rg.TotalRows = 0 THEN @MinReorgWorkPct
+                    ELSE
+                        CASE
+                            WHEN (rg.DeletedRows * 1.0 / NULLIF(rg.TotalRows, 0)) < @MinReorgWorkPct
+                                THEN @MinReorgWorkPct
+                            ELSE (rg.DeletedRows * 1.0 / NULLIF(rg.TotalRows, 0))
+                        END
+                  END
+                + (rg.DeltaRG * @DeltaRGWorkMB)
+            )
+            / NULLIF(@ReorgMBps, 0)
+            * @ReorgFactor
+        ) / 60.0
+        AS decimal(19,2)
+    ) AS EstReorgMinutes,
+
+    -------------------------------------------------------------------
+    -- Optional: suggested action (based on deleted% & size)
+    -------------------------------------------------------------------
+    CASE
+        WHEN CAST(rg.DeletedRows * 100.0 / NULLIF(rg.TotalRows, 0) AS decimal(9,2)) >= 20
+             THEN 'REORGANIZE'
+        WHEN rg.DeltaRG >= 10 AND (ps.used_pages * 8.0 / 1024.0) >= 1024
+             THEN 'REORGANIZE'
+        WHEN rg.TrimmedRG >= 20
+             THEN 'CONSIDER_REBUILD'
+        ELSE 'OK'
+    END AS SuggestedAction
+
+FROM rg
+JOIN ps
+  ON ps.object_id = rg.object_id
+ AND ps.index_id = rg.index_id
+ AND ps.partition_number = rg.partition_number
+JOIN sys.indexes i
+  ON i.object_id = rg.object_id
+ AND i.index_id  = rg.index_id
+JOIN sys.tables t
+  ON t.object_id = i.object_id
+JOIN sys.schemas s
+  ON s.schema_id = t.schema_id
+WHERE i.type = 5  -- CCI only
+ORDER BY
+    FragmentationPercent DESC,
+    UsedMB DESC;
