@@ -1,0 +1,141 @@
+/*
+    Always On AG Monitor with Millisecond Lag + Color Threshold Output
+    Includes:
+      - Replica sync/async mode
+      - Database sync state
+      - Redo/logsend queue sizes
+      - Calculated millisecond lag from timestamps
+      - Fallback ms lag from redo queue
+      - Configurable color-coded results (GREEN/YELLOW/RED)
+*/
+
+----------------------------------------------
+-- Thresholds (ms)
+----------------------------------------------
+DECLARE @GreenThreshold  INT = 500;    -- < 500 ms = GREEN
+DECLARE @YellowThreshold INT = 2000;   -- 500–1999 ms = YELLOW
+----------------------------------------------
+
+;WITH db_state AS
+(
+    SELECT
+        dbrs.group_database_id,
+        dbrs.replica_id,
+        dbrs.is_primary_replica,
+        dbrs.is_local,
+        dbrs.synchronization_state,
+        dbrs.synchronization_state_desc,
+        dbrs.synchronization_health_desc,
+        dbrs.is_suspended,
+        dbrs.log_send_queue_size,         -- KB
+        dbrs.redo_queue_size,             -- KB
+        dbrs.redo_rate,                   -- KB/sec
+        dbrs.secondary_lag_seconds,       -- Seconds (coarse)
+        dbrs.last_commit_time,
+        dbrs.last_hardened_time,
+        dbrs.last_redone_time
+    FROM sys.dm_hadr_database_replica_states AS dbrs
+),
+primary_secondary AS
+(
+    -- Join primary DB row to each secondary DB row for ms precision calculations
+    SELECT
+        p.group_database_id,
+        p.replica_id AS primary_replica_id,
+        s.replica_id AS secondary_replica_id,
+        p.last_commit_time  AS primary_last_commit,
+        s.last_redone_time  AS secondary_last_redone,
+        s.redo_queue_size,
+        s.redo_rate,
+        s.secondary_lag_seconds
+    FROM db_state p
+    JOIN db_state s
+      ON p.group_database_id    = s.group_database_id
+     AND p.is_primary_replica   = 1
+     AND s.is_primary_replica   = 0
+)
+SELECT
+    AG.name                                   AS [AvailabilityGroupName],
+    AR.replica_server_name                    AS [ReplicaServerName],
+    AR.availability_mode_desc                 AS [ReplicaAvailabilityMode],   -- SYNC/ASYNC
+    AR.failover_mode_desc                     AS [FailoverMode],
+    AR.secondary_role_allow_connections_desc  AS [ReadableSecondary],
+    arstates.role_desc                        AS [LocalReplicaRoleDesc],      -- PRIMARY/SECONDARY
+    dbcs.database_name                        AS [DatabaseName],
+
+    -- DB sync state
+    dbrs.synchronization_state                AS [SyncState],
+    dbrs.synchronization_state_desc           AS [SyncStateDesc],
+    dbrs.synchronization_health_desc          AS [SyncHealthDesc],
+    dbrs.is_suspended                         AS [IsSuspended],
+    dbcs.is_database_joined                   AS [IsJoined],
+
+    -- Queue / throughput metrics
+    dbrs.log_send_queue_size                  AS [LogSendQueue_KB],
+    dbrs.redo_queue_size                      AS [RedoQueue_KB],
+    dbrs.redo_rate                            AS [RedoRate_KBsec],
+
+    -- Built-in seconds lag
+    dbrs.secondary_lag_seconds                AS [EstimatedLag_Seconds],
+
+    -- Calculated ms lag using commit vs redone
+    CASE 
+        WHEN ps.primary_last_commit IS NOT NULL
+         AND ps.secondary_last_redone IS NOT NULL
+        THEN DATEDIFF(MILLISECOND, ps.secondary_last_redone, ps.primary_last_commit)
+        ELSE NULL
+    END AS [EstimatedRedoLag_ms],
+
+    -- Fallback ms estimate using queue/rate
+    CASE 
+        WHEN dbrs.redo_rate IS NOT NULL AND dbrs.redo_rate > 0
+        THEN CAST((dbrs.redo_queue_size * 1000.0) / dbrs.redo_rate AS BIGINT)
+        ELSE NULL
+    END AS [EstimatedRedoLag_FromQueue_ms],
+
+    ----------------------------------------------
+    -- COLOR BAND based on best available ms lag
+    ----------------------------------------------
+    CASE 
+        WHEN COALESCE(
+                CASE WHEN ps.primary_last_commit IS NOT NULL 
+                     AND ps.secondary_last_redone IS NOT NULL
+                     THEN DATEDIFF(MILLISECOND, ps.secondary_last_redone, ps.primary_last_commit)
+                END,
+                CASE WHEN dbrs.redo_rate > 0 
+                     THEN CAST((dbrs.redo_queue_size * 1000.0) / dbrs.redo_rate AS BIGINT)
+                END,
+                0
+        ) < @GreenThreshold THEN 'GREEN'
+
+        WHEN COALESCE(
+                CASE WHEN ps.primary_last_commit IS NOT NULL 
+                     AND ps.secondary_last_redone IS NOT NULL
+                     THEN DATEDIFF(MILLISECOND, ps.secondary_last_redone, ps.primary_last_commit)
+                END,
+                CASE WHEN dbrs.redo_rate > 0 
+                     THEN CAST((dbrs.redo_queue_size * 1000.0) / dbrs.redo_rate AS BIGINT)
+                END,
+                0
+        ) < @YellowThreshold THEN 'YELLOW'
+
+        ELSE 'RED'
+    END AS [LagColor]
+
+FROM sys.availability_groups AS AG
+JOIN sys.availability_replicas AS AR
+  ON AG.group_id = AR.group_id
+JOIN sys.dm_hadr_availability_replica_states AS arstates
+  ON AR.replica_id = arstates.replica_id
+JOIN sys.dm_hadr_database_replica_cluster_states AS dbcs
+  ON AR.replica_id = dbcs.replica_id
+LEFT JOIN sys.dm_hadr_database_replica_states AS dbrs
+  ON dbcs.replica_id = dbrs.replica_id
+ AND dbcs.group_database_id = dbrs.group_database_id
+LEFT JOIN primary_secondary AS ps
+  ON ps.group_database_id    = dbrs.group_database_id
+ AND ps.secondary_replica_id = dbrs.replica_id
+ORDER BY
+    AG.name,
+    AR.replica_server_name,
+    dbcs.database_name;
