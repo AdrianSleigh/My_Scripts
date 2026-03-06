@@ -1,0 +1,224 @@
+
+CREATE PROCEDURE dbo.usp_QS_TopCPU_AroundTime
+
+/* uses querystore to get top cpu queries for a period. 
+Adrian Sleigh 06/03/26
+
+Example:
+EXEC zdba.dbo.usp_QS_TopCPU_AroundTime
+    @TargetDatabase = 'databasenamehere',
+    @TargetDate = '2026-03-05',
+    @TargetTime = '22:00:00',
+    @WindowMinutes = 90,
+    @Top = 100,
+    @GroupByQuery = 0;
+*/
+(
+      @TargetDatabase sysname  = NULL       -- Database to query Query Store from (NULL = current DB)
+    , @TargetDate     date     = NULL       -- Defaults to yesterday if NULL
+    , @TargetTime     time(0)  = '21:00:00' -- Target time (hh:mm:ss)
+    , @WindowMinutes  int      = 60         -- +/- minutes around target time
+    , @Top            int      = 50         -- Top N rows
+    , @GroupByQuery   bit      = 0          -- 0 = query+plan, 1 = query only
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    /* Default DB to current database if not supplied */
+    IF @TargetDatabase IS NULL
+        SET @TargetDatabase = DB_NAME();
+
+    /* Validate database exists */
+    IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = @TargetDatabase)
+    BEGIN
+        RAISERROR('Target database %s does not exist.', 16, 1, @TargetDatabase);
+        RETURN;
+    END;
+
+    /* Default date to yesterday (server local date) */
+    IF @TargetDate IS NULL
+        SET @TargetDate = DATEADD(day, -1, CONVERT(date, SYSDATETIME()));
+
+    /* Guardrails */
+    IF @WindowMinutes < 0 OR @WindowMinutes > 1440
+    BEGIN
+        RAISERROR('@WindowMinutes must be between 0 and 1440.', 16, 1);
+        RETURN;
+    END;
+
+    IF @Top IS NULL OR @Top < 1 OR @Top > 1000
+    BEGIN
+        RAISERROR('@Top must be between 1 and 1000.', 16, 1);
+        RETURN;
+    END;
+
+    DECLARE @TargetDateTime datetime2(0) =
+        DATETIME2FROMPARTS
+        (
+              YEAR(@TargetDate), MONTH(@TargetDate), DAY(@TargetDate)
+            , DATEPART(hour,   @TargetTime)
+            , DATEPART(minute, @TargetTime)
+            , DATEPART(second, @TargetTime)
+            , 0, 0
+        );
+
+    DECLARE @StartTime datetime2(0) = DATEADD(minute, -@WindowMinutes, @TargetDateTime);
+    DECLARE @EndTime   datetime2(0) = DATEADD(minute,  @WindowMinutes, @TargetDateTime);
+
+    /* Temp table visible to dynamic SQL in the same session */
+    CREATE TABLE #rs
+    (
+          query_id              bigint       NOT NULL
+        , plan_id               bigint       NOT NULL
+        , start_time            datetime2(0)  NOT NULL
+        , end_time              datetime2(0)  NOT NULL
+        , count_executions      bigint       NOT NULL
+        , avg_cpu_time          float        NULL
+        , avg_duration          float        NULL
+        , avg_logical_io_reads  float        NULL
+        , query_sql_text        nvarchar(max) NULL
+    );
+
+    DECLARE @sql nvarchar(max) =
+N';WITH i AS
+(
+    SELECT runtime_stats_interval_id, start_time, end_time
+    FROM ' + QUOTENAME(@TargetDatabase) + N'.sys.query_store_runtime_stats_interval
+    WHERE start_time < @EndTime
+      AND end_time   > @StartTime
+)
+INSERT #rs (query_id, plan_id, start_time, end_time, count_executions, avg_cpu_time, avg_duration, avg_logical_io_reads, query_sql_text)
+SELECT
+      q.query_id
+    , p.plan_id
+    , i.start_time
+    , i.end_time
+    , r.count_executions
+    , r.avg_cpu_time
+    , r.avg_duration
+    , r.avg_logical_io_reads
+    , qt.query_sql_text
+FROM i
+JOIN ' + QUOTENAME(@TargetDatabase) + N'.sys.query_store_runtime_stats r
+    ON r.runtime_stats_interval_id = i.runtime_stats_interval_id
+JOIN ' + QUOTENAME(@TargetDatabase) + N'.sys.query_store_plan p
+    ON p.plan_id = r.plan_id
+JOIN ' + QUOTENAME(@TargetDatabase) + N'.sys.query_store_query q
+    ON q.query_id = p.query_id
+JOIN ' + QUOTENAME(@TargetDatabase) + N'.sys.query_store_query_text qt
+    ON qt.query_text_id = q.query_text_id;';
+
+    EXEC sys.sp_executesql
+          @sql
+        , N'@StartTime datetime2(0), @EndTime datetime2(0)'
+        , @StartTime = @StartTime
+        , @EndTime   = @EndTime;
+
+    IF NOT EXISTS (SELECT 1 FROM #rs)
+    BEGIN
+        -- Return an empty result set with the right shape
+        SELECT
+              CAST(NULL AS bigint)        AS query_id
+            , CAST(NULL AS bigint)        AS plan_id
+            , CAST(NULL AS varchar(19))   AS bucket_start
+            , CAST(NULL AS varchar(19))   AS bucket_end
+            , CAST(NULL AS bigint)        AS execs
+            , CAST(NULL AS decimal(18,2)) AS est_total_cpu_ms
+            , CAST(NULL AS decimal(18,2)) AS est_total_duration_ms
+            , CAST(NULL AS decimal(18,2)) AS est_total_logical_reads
+            , CAST(NULL AS decimal(18,2)) AS avg_cpu_ms_per_exec
+            , CAST(NULL AS decimal(18,2)) AS avg_duration_ms_per_exec
+            , CAST(NULL AS nvarchar(max)) AS query_sql_text
+        WHERE 1 = 0;
+
+        RETURN;
+    END;
+
+    /* Results: group by query only or query+plan */
+    IF @GroupByQuery = 1
+    BEGIN
+        SELECT TOP (@Top)
+              r.query_id
+            , NULL AS plan_id
+            , CONVERT(varchar(19), MIN(r.start_time), 120) AS bucket_start  -- yyyy-mm-dd hh:mi:ss
+            , CONVERT(varchar(19), MAX(r.end_time),   120) AS bucket_end
+            , SUM(r.count_executions) AS execs
+
+            , CAST(
+                SUM(CONVERT(decimal(38,0), ISNULL(r.avg_cpu_time,0)) * CONVERT(decimal(38,0), r.count_executions)) / 1000.0
+              AS decimal(18,2)) AS est_total_cpu_ms
+
+            , CAST(
+                SUM(CONVERT(decimal(38,0), ISNULL(r.avg_duration,0)) * CONVERT(decimal(38,0), r.count_executions)) / 1000.0
+              AS decimal(18,2)) AS est_total_duration_ms
+
+            , CAST(
+                SUM(CONVERT(decimal(38,0), ISNULL(r.avg_logical_io_reads,0)) * CONVERT(decimal(38,0), r.count_executions))
+              AS decimal(18,2)) AS est_total_logical_reads
+
+            , CAST(
+                (
+                  SUM(CONVERT(decimal(38,0), ISNULL(r.avg_cpu_time,0)) * CONVERT(decimal(38,0), r.count_executions))
+                  / NULLIF(CONVERT(decimal(38,0), SUM(r.count_executions)), 0)
+                ) / 1000.0
+              AS decimal(18,2)) AS avg_cpu_ms_per_exec
+
+            , CAST(
+                (
+                  SUM(CONVERT(decimal(38,0), ISNULL(r.avg_duration,0)) * CONVERT(decimal(38,0), r.count_executions))
+                  / NULLIF(CONVERT(decimal(38,0), SUM(r.count_executions)), 0)
+                ) / 1000.0
+              AS decimal(18,2)) AS avg_duration_ms_per_exec
+
+            , MAX(r.query_sql_text) AS query_sql_text
+        FROM #rs r
+        GROUP BY r.query_id
+        ORDER BY
+            SUM(CONVERT(decimal(38,0), ISNULL(r.avg_cpu_time,0)) * CONVERT(decimal(38,0), r.count_executions)) DESC
+        OPTION (RECOMPILE);
+    END
+    ELSE
+    BEGIN
+        SELECT TOP (@Top)
+              r.query_id
+            , r.plan_id
+            , CONVERT(varchar(19), MIN(r.start_time), 120) AS bucket_start
+            , CONVERT(varchar(19), MAX(r.end_time),   120) AS bucket_end
+            , SUM(r.count_executions) AS execs
+
+            , CAST(
+                SUM(CONVERT(decimal(38,0), ISNULL(r.avg_cpu_time,0)) * CONVERT(decimal(38,0), r.count_executions)) / 1000.0
+              AS decimal(18,2)) AS est_total_cpu_ms
+
+            , CAST(
+                SUM(CONVERT(decimal(38,0), ISNULL(r.avg_duration,0)) * CONVERT(decimal(38,0), r.count_executions)) / 1000.0
+              AS decimal(18,2)) AS est_total_duration_ms
+
+            , CAST(
+                SUM(CONVERT(decimal(38,0), ISNULL(r.avg_logical_io_reads,0)) * CONVERT(decimal(38,0), r.count_executions))
+              AS decimal(18,2)) AS est_total_logical_reads
+
+            , CAST(
+                (
+                  SUM(CONVERT(decimal(38,0), ISNULL(r.avg_cpu_time,0)) * CONVERT(decimal(38,0), r.count_executions))
+                  / NULLIF(CONVERT(decimal(38,0), SUM(r.count_executions)), 0)
+                ) / 1000.0
+              AS decimal(18,2)) AS avg_cpu_ms_per_exec
+
+            , CAST(
+                (
+                  SUM(CONVERT(decimal(38,0), ISNULL(r.avg_duration,0)) * CONVERT(decimal(38,0), r.count_executions))
+                  / NULLIF(CONVERT(decimal(38,0), SUM(r.count_executions)), 0)
+                ) / 1000.0
+              AS decimal(18,2)) AS avg_duration_ms_per_exec
+
+            , MAX(r.query_sql_text) AS query_sql_text
+        FROM #rs r
+        GROUP BY r.query_id, r.plan_id
+        ORDER BY
+            SUM(CONVERT(decimal(38,0), ISNULL(r.avg_cpu_time,0)) * CONVERT(decimal(38,0), r.count_executions)) DESC
+        OPTION (RECOMPILE);
+    END
+END;
+GO
