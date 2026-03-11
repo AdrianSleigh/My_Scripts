@@ -1,0 +1,752 @@
+--Add on for ColumnStoreIndexing Maintenance (Hallengrenstyled) 09/03/2025 V2.0
+/****** Object:  StoredProcedure [dbo].[CCI_Maintain]    Script Date: 09/03/2026 09:46:15 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE PROCEDURE [dbo].[CCI_Maintain]
+
+----Adrian Sleigh V2.0 09/03/26 stored procedure to maintain CCI indexes includes logging tables below
+/*
+USE [ZDBA]
+GO
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TABLE [dbo].[CCI_CommandLog](
+	[CommandLogID] [bigint] IDENTITY(1,1) NOT NULL,
+	[RunID] [uniqueidentifier] NOT NULL,
+	[ProcName] [sysname] NOT NULL,
+	[DatabaseName] [sysname] NULL,
+	[SchemaName] [sysname] NULL,
+	[TableName] [sysname] NULL,
+	[IndexName] [sysname] NULL,
+	[PartitionNumber] [int] NULL,
+	[SuggestedAction] [varchar](16) NULL,
+	[CommandText] [nvarchar](max) NULL,
+	[StartTime] [datetime2](0) NOT NULL,
+	[EndTime] [datetime2](0) NULL,
+	[DurationSeconds] [int] NULL,
+	[Outcome] [varchar](30) NOT NULL,
+	[ErrorNumber] [int] NULL,
+	[ErrorSeverity] [int] NULL,
+	[ErrorState] [int] NULL,
+	[ErrorLine] [int] NULL,
+	[ErrorProcedure] [nvarchar](128) NULL,
+	[ErrorMessage] [nvarchar](4000) NULL,
+	[HostName] [nvarchar](128) NOT NULL,
+	[AppName] [nvarchar](128) NOT NULL,
+	[LoginName] [nvarchar](128) NOT NULL,
+	[SPID] [int] NOT NULL,
+ CONSTRAINT [PK_CCI_CommandLog] PRIMARY KEY CLUSTERED 
+(
+	[CommandLogID] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+ALTER TABLE [dbo].[CCI_CommandLog] ADD  CONSTRAINT [DF_CCI_CommandLog_ProcName]  DEFAULT (N'dbo.CCI_Maintain') FOR [ProcName]
+GO
+ALTER TABLE [dbo].[CCI_CommandLog] ADD  CONSTRAINT [DF_CCI_CommandLog_Host]  DEFAULT (host_name()) FOR [HostName]
+GO
+ALTER TABLE [dbo].[CCI_CommandLog] ADD  CONSTRAINT [DF_CCI_CommandLog_App]  DEFAULT (app_name()) FOR [AppName]
+GO
+ALTER TABLE [dbo].[CCI_CommandLog] ADD  CONSTRAINT [DF_CCI_CommandLog_Login]  DEFAULT (original_login()) FOR [LoginName]
+GO
+ALTER TABLE [dbo].[CCI_CommandLog] ADD  CONSTRAINT [DF_CCI_CommandLog_SPID]  DEFAULT (@@spid) FOR [SPID]
+GO
+CREATE TABLE [dbo].[CCI_RunLog](
+	[RunID] [uniqueidentifier] NOT NULL,
+	[StartTime] [datetime2](0) NOT NULL,
+	[EndTime] [datetime2](0) NULL,
+	[DatabaseParam] [sysname] NULL,
+	[ExecuteMode] [bit] NOT NULL,
+	[TimeLimitSec] [int] NULL,
+	[LockTimeoutSec] [int] NULL,
+	[DelaySec] [int] NULL,
+	[LogToTable] [bit] NOT NULL,
+	[StopReason] [nvarchar](200) NULL,
+	[HostName] [nvarchar](128) NOT NULL,
+	[AppName] [nvarchar](128) NOT NULL,
+	[LoginName] [nvarchar](128) NOT NULL,
+	[SPID] [int] NOT NULL,
+ CONSTRAINT [PK_CCI_RunLog] PRIMARY KEY CLUSTERED 
+(
+	[RunID] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+) ON [PRIMARY]
+GO
+ALTER TABLE [dbo].[CCI_RunLog] ADD  CONSTRAINT [DF_CCI_RunLog_Host]  DEFAULT (host_name()) FOR [HostName]
+GO
+ALTER TABLE [dbo].[CCI_RunLog] ADD  CONSTRAINT [DF_CCI_RunLog_App]  DEFAULT (app_name()) FOR [AppName]
+GO
+ALTER TABLE [dbo].[CCI_RunLog] ADD  CONSTRAINT [DF_CCI_RunLog_Login]  DEFAULT (original_login()) FOR [LoginName]
+GO
+ALTER TABLE [dbo].[CCI_RunLog] ADD  CONSTRAINT [DF_CCI_RunLog_SPID]  DEFAULT (@@spid) FOR [SPID]
+GO
+---------------------------------------------------------------
+Examples:
+report only. EXEC zdba.dbo.CCI_Maintain;
+example single database. EXEC dbo.CCI_Maintain @Database = N'fred', @Execute = 1;
+example all databases.   EXEC zdba.dbo.CCI_Maintain @Execute = 1;
+
+All parameters:
+EXEC dbo.CCI_Maintain
+@Database = N'databasehere',
+@Execute = 0, --0 for reporting
+@TimeLimit = 360, -- 1 hour
+@LockTimeoutSeconds = NULL, -- msecs
+@DelaySeconds =  NULL, -- wait between commands
+@LogToTable = 1,
+@UseCompressAllRowGroups = 1,
+@MinUsedMBForAction = 128,
+@DeletedPctForReorg = 20.0,
+@DeltaRGForReorg = 10,
+@MinUsedMBForReorgDelta = 1024,
+@IgnoreOpenRGUpTo = 1,
+@TrimmedRGThreshold = 20,
+@SmallRGRowThreshold = 500000,
+@SmallRGCountForRebuild = 50,
+@SmallRGPctForRebuild = 20.0,
+@DeltaRGForRebuild = 10;
+
+----------------------------------------------------------------
+*/
+(
+      @Database sysname = NULL
+    , @Execute  bit     = 0
+
+    -- Hallengren-style time limit in seconds: after N seconds, do NOT START any more commands (EXECUTE phase only) 
+    , @TimeLimit int = NULL
+
+    -- Optional safety controls (no behavior change unless set)
+    , @LockTimeoutSeconds int = NULL -- seconds; uses SET LOCK_TIMEOUT (ms) per ALTER command
+    , @DelaySeconds int = NULL       -- seconds; WAITFOR DELAY between commands
+
+    -- Optional logging
+    , @LogToTable bit = 0            -- logs to dbo.CCI_RunLog and dbo.CCI_CommandLog when present
+
+    , @UseCompressAllRowGroups bit = 0
+
+    , @MinUsedMBForAction      decimal(19,2) = 128
+    , @DeletedPctForReorg      decimal(9,2)  = 20.0
+
+    , @DeltaRGForReorg         int           = 10
+    , @MinUsedMBForReorgDelta  decimal(19,2) = 1024
+    , @IgnoreOpenRGUpTo        int           = 1
+
+    , @TrimmedRGThreshold      int           = 20
+    , @SmallRGRowThreshold     bigint        = 500000
+    , @SmallRGCountForRebuild  int           = 50
+    , @SmallRGPctForRebuild    decimal(9,2)  = 20.0
+    , @DeltaRGForRebuild       int           = 10
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -------------------------------------------------------------------------
+    -- Normalize parameters
+    -------------------------------------------------------------------------
+    IF @TimeLimit IS NOT NULL AND @TimeLimit <= 0 SET @TimeLimit = NULL;
+    IF @LockTimeoutSeconds IS NOT NULL AND @LockTimeoutSeconds < 0 SET @LockTimeoutSeconds = NULL;
+    IF @DelaySeconds IS NOT NULL AND @DelaySeconds <= 0 SET @DelaySeconds = NULL;
+
+    DECLARE @ProcStartTime datetime2(0) = SYSDATETIME();
+    DECLARE @RunID uniqueidentifier = NEWID();
+
+    -------------------------------------------------------------------------
+    -- Optional run header logging (non-invasive: only if tables exist)
+    -------------------------------------------------------------------------
+    IF @LogToTable = 1 AND OBJECT_ID(N'dbo.CCI_RunLog', N'U') IS NOT NULL
+    BEGIN
+        INSERT dbo.CCI_RunLog
+        (
+            RunID, StartTime, DatabaseParam, ExecuteMode,
+            TimeLimitSec, LockTimeoutSec, DelaySec, LogToTable
+        )
+        VALUES
+        (
+            @RunID, @ProcStartTime, @Database, @Execute,
+            @TimeLimit, @LockTimeoutSeconds, @DelaySeconds, @LogToTable
+        );
+    END
+
+    DECLARE @db sysname;
+
+    IF OBJECT_ID('tempdb..#cci') IS NOT NULL DROP TABLE #cci;
+    CREATE TABLE #cci
+    (
+        DatabaseName sysname NOT NULL,
+
+        ObjectID     int     NOT NULL,
+        IndexID      int     NOT NULL,
+
+        SchemaName   sysname NOT NULL,
+        TableName    sysname NOT NULL,
+        IndexName    sysname NOT NULL,
+
+        PartitionNumber int NOT NULL,
+
+        TableRows   bigint NULL,
+        UsedMB      decimal(19,2) NULL,
+
+        TotalRows   bigint NULL,
+        DeletedRows bigint NULL,
+        DeletedPct  decimal(9,2) NULL,
+
+        CompressedRG int NULL,
+        DeltaRG      int NULL,
+        OpenRG       int NULL,
+        ClosedRG     int NULL,
+        TrimmedRG    int NULL,
+
+        SmallCompressedRG     int NULL,
+        SmallCompressedRGPct  decimal(9,2) NULL,
+
+        SuggestedAction varchar(16) NOT NULL,
+        Reason          nvarchar(220) NULL,
+        CommandText     nvarchar(max) NULL
+    );
+
+    IF OBJECT_ID('tempdb..#db_run') IS NOT NULL DROP TABLE #db_run;
+    CREATE TABLE #db_run
+    (
+        DatabaseName sysname NOT NULL,
+        StartTime    datetime2(0) NOT NULL,
+        EndTime      datetime2(0) NULL,
+        Status       varchar(20)  NOT NULL,
+        Info         nvarchar(4000) NULL
+    );
+
+    DECLARE @DBs TABLE
+    (
+        DatabaseName sysname NOT NULL PRIMARY KEY,
+        ShouldProcess bit NOT NULL,
+        SkipReason nvarchar(4000) NULL
+    );
+
+    -------------------------------------------------------------------------
+    -- Build DB list (log SKIPPED rows incl AG secondaries)
+    -------------------------------------------------------------------------
+    IF @Database IS NOT NULL
+    BEGIN
+        IF DB_ID(@Database) IS NULL
+        BEGIN
+            RAISERROR('Database %s not found.', 16, 1, @Database);
+            RETURN;
+        END;
+
+        ;WITH d AS
+        (
+            SELECT *
+            FROM sys.databases
+            WHERE name = @Database
+        ),
+        hadr AS
+        (
+            SELECT
+                drs.database_id,
+                MAX(CASE WHEN drs.is_local = 1 THEN CAST(drs.is_primary_replica AS int) END) AS is_primary_replica_local
+            FROM sys.dm_hadr_database_replica_states drs
+            GROUP BY drs.database_id
+        )
+        INSERT INTO @DBs(DatabaseName, ShouldProcess, SkipReason)
+        SELECT
+            d.name,
+            CASE
+                WHEN d.database_id <= 4 THEN 0
+                WHEN d.state_desc <> N'ONLINE' THEN 0
+                WHEN d.user_access_desc <> N'MULTI_USER' THEN 0
+                WHEN d.source_database_id IS NOT NULL THEN 0
+                WHEN d.is_read_only = 1 THEN 0
+                WHEN ISNULL(h.is_primary_replica_local, 1) = 0 THEN 0
+                ELSE 1
+            END,
+            CASE
+                WHEN d.database_id <= 4 THEN N'System database'
+                WHEN d.state_desc <> N'ONLINE' THEN CONCAT(N'Not ONLINE (', d.state_desc, N')')
+                WHEN d.user_access_desc <> N'MULTI_USER' THEN CONCAT(N'Not MULTI_USER (', d.user_access_desc, N')')
+                WHEN d.source_database_id IS NOT NULL THEN N'Database snapshot'
+                WHEN d.is_read_only = 1 THEN N'Read-only database'
+                WHEN ISNULL(h.is_primary_replica_local, 1) = 0 THEN N'Availability Group SECONDARY on this instance'
+                ELSE NULL
+            END
+        FROM d
+        LEFT JOIN hadr h ON h.database_id = d.database_id;
+    END
+    ELSE
+    BEGIN
+        ;WITH hadr AS
+        (
+            SELECT
+                drs.database_id,
+                MAX(CASE WHEN drs.is_local = 1 THEN CAST(drs.is_primary_replica AS int) END) AS is_primary_replica_local
+            FROM sys.dm_hadr_database_replica_states drs
+            GROUP BY drs.database_id
+        )
+        INSERT INTO @DBs(DatabaseName, ShouldProcess, SkipReason)
+        SELECT
+            d.name,
+            CASE
+                WHEN d.state_desc <> N'ONLINE' THEN 0
+                WHEN d.user_access_desc <> N'MULTI_USER' THEN 0
+                WHEN d.source_database_id IS NOT NULL THEN 0
+                WHEN d.is_read_only = 1 THEN 0
+                WHEN ISNULL(h.is_primary_replica_local, 1) = 0 THEN 0
+                ELSE 1
+            END,
+            CASE
+                WHEN d.state_desc <> N'ONLINE' THEN CONCAT(N'Not ONLINE (', d.state_desc, N')')
+                WHEN d.user_access_desc <> N'MULTI_USER' THEN CONCAT(N'Not MULTI_USER (', d.user_access_desc, N')')
+                WHEN d.source_database_id IS NOT NULL THEN N'Database snapshot'
+                WHEN d.is_read_only = 1 THEN N'Read-only database'
+                WHEN ISNULL(h.is_primary_replica_local, 1) = 0 THEN N'Availability Group SECONDARY on this instance'
+                ELSE NULL
+            END
+        FROM sys.databases d
+        LEFT JOIN hadr h ON h.database_id = d.database_id
+        WHERE d.database_id > 4;
+    END;
+
+    INSERT INTO #db_run(DatabaseName, StartTime, EndTime, Status, Info)
+    SELECT DatabaseName, SYSDATETIME(), SYSDATETIME(), 'SKIPPED', SkipReason
+    FROM @DBs
+    WHERE ShouldProcess = 0;
+
+    DECLARE c_skip CURSOR LOCAL FAST_FORWARD FOR
+    SELECT DatabaseName, SkipReason
+    FROM @DBs
+    WHERE ShouldProcess = 0
+    ORDER BY DatabaseName;
+
+    DECLARE @skipReason nvarchar(4000);
+    OPEN c_skip;
+    FETCH NEXT FROM c_skip INTO @db, @skipReason;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        RAISERROR('CCI_Maintain: Skipping database %s (%s)', 10, 1, @db, @skipReason) WITH NOWAIT;
+        FETCH NEXT FROM c_skip INTO @db, @skipReason;
+    END
+    CLOSE c_skip;
+    DEALLOCATE c_skip;
+
+    -------------------------------------------------------------------------
+    -- Dynamic SQL template (discovery)
+    -------------------------------------------------------------------------
+    DECLARE @sql nvarchar(max) = N'
+USE __DB__;
+
+;WITH rg AS
+(
+    SELECT r.object_id, r.index_id, r.partition_number, r.state_desc, r.total_rows, r.deleted_rows, r.trim_reason_desc
+    FROM sys.dm_db_column_store_row_group_physical_stats AS r
+),
+ps AS
+(
+    SELECT p.object_id, p.index_id, p.partition_number,
+           SUM(p.row_count) AS row_count,
+           SUM(p.used_page_count) AS used_pages
+    FROM sys.dm_db_partition_stats AS p
+    GROUP BY p.object_id, p.index_id, p.partition_number
+),
+agg AS
+(
+    SELECT
+        i.object_id, i.index_id,
+        s.name AS SchemaName, t.name AS TableName, i.name AS IndexName,
+        rg.partition_number,
+        ps.row_count, ps.used_pages,
+        SUM(rg.total_rows) AS TotalRows,
+        SUM(rg.deleted_rows) AS DeletedRows,
+        SUM(CASE WHEN rg.state_desc = ''COMPRESSED'' THEN 1 ELSE 0 END) AS CompressedRG,
+        SUM(CASE WHEN rg.state_desc IN (''OPEN'',''CLOSED'') THEN 1 ELSE 0 END) AS DeltaRG,
+        SUM(CASE WHEN rg.state_desc = ''OPEN'' THEN 1 ELSE 0 END) AS OpenRG,
+        SUM(CASE WHEN rg.state_desc = ''CLOSED'' THEN 1 ELSE 0 END) AS ClosedRG,
+        SUM(CASE WHEN rg.trim_reason_desc IS NOT NULL AND rg.trim_reason_desc <> ''NO_TRIM'' THEN 1 ELSE 0 END) AS TrimmedRG,
+        SUM(CASE WHEN rg.state_desc = ''COMPRESSED'' AND rg.total_rows < @SmallRGRowThreshold THEN 1 ELSE 0 END) AS SmallCompressedRG,
+        MAX(CASE WHEN ds.[type] = ''PS'' THEN 1 ELSE 0 END) AS IsPartitioned
+    FROM rg
+    JOIN sys.indexes i ON i.object_id = rg.object_id AND i.index_id = rg.index_id
+    JOIN sys.tables t ON t.object_id = i.object_id
+    JOIN sys.schemas s ON s.schema_id = t.schema_id
+    JOIN sys.data_spaces ds ON ds.data_space_id = i.data_space_id
+    JOIN ps ON ps.object_id = rg.object_id AND ps.index_id = rg.index_id AND ps.partition_number = rg.partition_number
+    WHERE i.type = 5
+    GROUP BY i.object_id, i.index_id, s.name, t.name, i.name, rg.partition_number, ps.row_count, ps.used_pages
+)
+INSERT INTO #cci
+(
+    DatabaseName, ObjectID, IndexID, SchemaName, TableName, IndexName, PartitionNumber,
+    TableRows, UsedMB,
+    TotalRows, DeletedRows, DeletedPct,
+    CompressedRG, DeltaRG, OpenRG, ClosedRG, TrimmedRG,
+    SmallCompressedRG, SmallCompressedRGPct,
+    SuggestedAction, Reason, CommandText
+)
+SELECT
+    DB_NAME(),
+    a.object_id, a.index_id, a.SchemaName, a.TableName, a.IndexName, a.partition_number,
+    a.row_count,
+    CAST(a.used_pages * 8.0 / 1024.0 AS decimal(19,2)),
+    a.TotalRows,
+    a.DeletedRows,
+    CAST(a.DeletedRows * 100.0 / NULLIF(a.TotalRows,0) AS decimal(9,2)),
+    a.CompressedRG, a.DeltaRG, a.OpenRG, a.ClosedRG, a.TrimmedRG,
+    a.SmallCompressedRG,
+    CAST(a.SmallCompressedRG * 100.0 / NULLIF(a.CompressedRG,0) AS decimal(9,2)),
+    ca.SuggestedAction,
+    ca.Reason,
+    CASE
+      WHEN ca.SuggestedAction = ''REBUILD'' THEN
+           N''ALTER INDEX '' + QUOTENAME(a.IndexName) + N'' ON '' + QUOTENAME(a.SchemaName) + N''.'' + QUOTENAME(a.TableName)
+           + N'' REBUILD'' + CASE WHEN a.IsPartitioned = 1 THEN N'' PARTITION = '' + CAST(a.partition_number AS nvarchar(12)) ELSE N'''' END + N'';''
+      WHEN ca.SuggestedAction = ''REORGANIZE'' THEN
+           N''ALTER INDEX '' + QUOTENAME(a.IndexName) + N'' ON '' + QUOTENAME(a.SchemaName) + N''.'' + QUOTENAME(a.TableName)
+           + N'' REORGANIZE'' + CASE WHEN a.IsPartitioned = 1 THEN N'' PARTITION = '' + CAST(a.partition_number AS nvarchar(12)) ELSE N'''' END
+           + CASE WHEN @UseCompressAllRowGroups = 1 THEN N'' WITH (COMPRESS_ALL_ROW_GROUPS = ON)'' ELSE N'''' END + N'';''
+      ELSE NULL
+    END
+FROM agg a
+CROSS APPLY
+(
+    SELECT
+        SuggestedAction =
+            CASE
+                WHEN (a.used_pages * 8.0 / 1024.0) < @MinUsedMBForAction THEN ''OK''
+                WHEN a.TrimmedRG >= @TrimmedRGThreshold
+                 AND (
+                        a.SmallCompressedRG >= @SmallRGCountForRebuild
+                     OR (a.SmallCompressedRG * 100.0 / NULLIF(a.CompressedRG,0)) >= @SmallRGPctForRebuild
+                     )
+                 AND a.DeltaRG >= @DeltaRGForRebuild
+                THEN ''REBUILD''
+                WHEN (a.DeletedRows * 100.0) / NULLIF(a.TotalRows,0) >= @DeletedPctForReorg
+                THEN ''REORGANIZE''
+                WHEN a.ClosedRG > 0 THEN ''REORGANIZE''
+                WHEN a.DeltaRG >= @DeltaRGForReorg
+                 AND (a.used_pages * 8.0 / 1024.0) >= @MinUsedMBForReorgDelta
+                 AND a.OpenRG > @IgnoreOpenRGUpTo
+                THEN ''REORGANIZE''
+                ELSE ''OK''
+            END,
+        Reason =
+            CASE
+                WHEN (a.used_pages * 8.0 / 1024.0) < @MinUsedMBForAction THEN N''Skipped: too small''
+                WHEN a.TrimmedRG >= @TrimmedRGThreshold
+                 AND (
+                        a.SmallCompressedRG >= @SmallRGCountForRebuild
+                     OR (a.SmallCompressedRG * 100.0 / NULLIF(a.CompressedRG,0)) >= @SmallRGPctForRebuild
+                     )
+                 AND a.DeltaRG >= @DeltaRGForRebuild
+                THEN N''Structural rowgroup issue (trimmed + many small rowgroups + delta pressure)''
+                WHEN (a.DeletedRows * 100.0) / NULLIF(a.TotalRows,0) >= @DeletedPctForReorg
+                THEN N''Deleted rows % above threshold''
+                WHEN a.ClosedRG > 0 THEN N''Actionable delta pressure: CLOSED delta rowgroups present''
+                WHEN a.DeltaRG >= @DeltaRGForReorg
+                 AND (a.used_pages * 8.0 / 1024.0) >= @MinUsedMBForReorgDelta
+                 AND a.OpenRG > @IgnoreOpenRGUpTo
+                THEN N''Delta backlog high (beyond normal OPEN delta rowgroup)''
+                WHEN a.OpenRG > 0 AND a.ClosedRG = 0 THEN N''Healthy: normal OPEN delta rowgroup during continuous inserts''
+                ELSE N''Healthy''
+            END
+) ca;
+';
+
+    -------------------------------------------------------------------------
+    -- Process eligible DBs (discovery)
+    -------------------------------------------------------------------------
+    DECLARE c_db CURSOR LOCAL FAST_FORWARD FOR
+    SELECT DatabaseName FROM @DBs WHERE ShouldProcess = 1 ORDER BY DatabaseName;
+
+    OPEN c_db;
+    FETCH NEXT FROM c_db INTO @db;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        DECLARE @start datetime2(0) = SYSDATETIME();
+
+        INSERT INTO #db_run(DatabaseName, StartTime, Status, Info)
+        VALUES (@db, @start, 'STARTED', NULL);
+
+        RAISERROR('CCI_Maintain: Starting database %s', 10, 1, @db) WITH NOWAIT;
+
+        BEGIN TRY
+            DECLARE @sqlThis nvarchar(max) = REPLACE(@sql, N'__DB__', QUOTENAME(@db));
+
+            EXEC sys.sp_executesql
+                @sqlThis,
+                N'@MinUsedMBForAction decimal(19,2),
+                  @DeletedPctForReorg decimal(9,2),
+                  @DeltaRGForReorg int,
+                  @MinUsedMBForReorgDelta decimal(19,2),
+                  @IgnoreOpenRGUpTo int,
+                  @TrimmedRGThreshold int,
+                  @SmallRGRowThreshold bigint,
+                  @SmallRGCountForRebuild int,
+                  @SmallRGPctForRebuild decimal(9,2),
+                  @DeltaRGForRebuild int,
+                  @UseCompressAllRowGroups bit',
+                @MinUsedMBForAction,
+                @DeletedPctForReorg,
+                @DeltaRGForReorg,
+                @MinUsedMBForReorgDelta,
+                @IgnoreOpenRGUpTo,
+                @TrimmedRGThreshold,
+                @SmallRGRowThreshold,
+                @SmallRGCountForRebuild,
+                @SmallRGPctForRebuild,
+                @DeltaRGForRebuild,
+                @UseCompressAllRowGroups;
+
+            UPDATE #db_run
+              SET EndTime = SYSDATETIME(),
+                  Status  = 'OK'
+            WHERE DatabaseName = @db AND StartTime = @start;
+
+            RAISERROR('CCI_Maintain: Completed database %s', 10, 1, @db) WITH NOWAIT;
+        END TRY
+        BEGIN CATCH
+            DECLARE @errmsg1 nvarchar(4000) = ERROR_MESSAGE();
+
+            UPDATE #db_run
+              SET EndTime = SYSDATETIME(),
+                  Status  = 'ERROR',
+                  Info    = @errmsg1
+            WHERE DatabaseName = @db AND StartTime = @start;
+
+            RAISERROR('CCI_Maintain: ERROR in database %s - %s', 10, 1, @db, @errmsg1) WITH NOWAIT;
+        END CATCH;
+
+        FETCH NEXT FROM c_db INTO @db;
+    END
+
+    CLOSE c_db;
+    DEALLOCATE c_db;
+
+    -------------------------------------------------------------------------
+    -- Output discovery results
+    -------------------------------------------------------------------------
+    SELECT * FROM #cci
+    ORDER BY
+      CASE SuggestedAction WHEN 'REBUILD' THEN 2 WHEN 'REORGANIZE' THEN 1 ELSE 0 END DESC,
+      DatabaseName, UsedMB DESC, DeletedPct DESC, SchemaName, TableName, IndexName, PartitionNumber;
+
+    -------------------------------------------------------------------------
+    -- Execute phase (TimeLimit applies ONLY here)
+    -------------------------------------------------------------------------
+    IF @Execute = 1
+    BEGIN
+        DECLARE @ExecuteStartTime datetime2(0) = SYSDATETIME();
+        DECLARE @ExecuteStopTime  datetime2(0) =
+            CASE WHEN @TimeLimit IS NULL THEN NULL ELSE DATEADD(SECOND, @TimeLimit, @ExecuteStartTime) END;
+
+        DECLARE @cmdDB sysname,
+                @cmdSchema sysname,
+                @cmdTable sysname,
+                @cmdIndex sysname,
+                @cmdPartition int,
+                @cmdAction varchar(16),
+                @cmd nvarchar(max);
+
+        DECLARE @execCmd nvarchar(max);
+        DECLARE @lockMs int = CASE WHEN @LockTimeoutSeconds IS NULL THEN NULL ELSE @LockTimeoutSeconds * 1000 END;
+
+        DECLARE @CommandLogID bigint;
+        DECLARE @cmdStart datetime2(0);
+
+        DECLARE @delay time(0) = CASE
+                                    WHEN @DelaySeconds IS NULL THEN NULL
+                                    ELSE DATEADD(SECOND, @DelaySeconds, CAST('00:00:00' AS time(0)))
+                                 END;
+
+        -- For timeboxed windows, REORGANIZE-first often yields more completed work before TimeLimit hits.
+        DECLARE c CURSOR LOCAL FAST_FORWARD FOR
+        SELECT
+            DatabaseName, SchemaName, TableName, IndexName, PartitionNumber, SuggestedAction, CommandText
+        FROM #cci
+        WHERE SuggestedAction IN ('REORGANIZE','REBUILD')
+          AND CommandText IS NOT NULL
+        ORDER BY
+          CASE SuggestedAction WHEN 'REORGANIZE' THEN 1 WHEN 'REBUILD' THEN 2 ELSE 3 END,
+          DatabaseName,
+          UsedMB DESC;
+
+        OPEN c;
+        FETCH NEXT FROM c INTO @cmdDB, @cmdSchema, @cmdTable, @cmdIndex, @cmdPartition, @cmdAction, @cmd;
+
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -----------------------------------------------------------------
+            -- TimeLimit check (Hallengren style): after N seconds, do NOT START any more commands. [1](https://ola.hallengren.com/sql-server-index-and-statistics-maintenance.html)
+            -----------------------------------------------------------------
+            IF @ExecuteStopTime IS NOT NULL AND SYSDATETIME() >= @ExecuteStopTime
+            BEGIN
+                RAISERROR('CCI_Maintain: Time limit reached (%d seconds). Stopping before remaining commands.',
+                          10, 1, @TimeLimit) WITH NOWAIT;
+
+                IF @LogToTable = 1 AND OBJECT_ID(N'dbo.CCI_CommandLog', N'U') IS NOT NULL
+                BEGIN
+                    INSERT dbo.CCI_CommandLog
+                    (
+                        RunID, ProcName, StartTime, EndTime, DurationSeconds,
+                        Outcome, ErrorMessage
+                    )
+                    VALUES
+                    (
+                        @RunID, N'dbo.CCI_Maintain',
+                        SYSDATETIME(), SYSDATETIME(), 0,
+                        'SKIPPED_TIMELIMIT',
+                        CONCAT('Time limit reached (', @TimeLimit, ' seconds). No further commands started.')
+                    );
+                END
+
+                IF @LogToTable = 1 AND OBJECT_ID(N'dbo.CCI_RunLog', N'U') IS NOT NULL
+                BEGIN
+                    UPDATE dbo.CCI_RunLog
+                      SET EndTime = SYSDATETIME(),
+                          StopReason = CONCAT('Time limit reached (', @TimeLimit, ' seconds).')
+                    WHERE RunID = @RunID;
+                END
+
+                BREAK;
+            END
+
+            -----------------------------------------------------------------
+            -- Log STARTED
+            -----------------------------------------------------------------
+            SET @cmdStart = SYSDATETIME();
+            SET @CommandLogID = NULL;
+
+            IF @LogToTable = 1 AND OBJECT_ID(N'dbo.CCI_CommandLog', N'U') IS NOT NULL
+            BEGIN
+                INSERT dbo.CCI_CommandLog
+                (
+                    RunID, ProcName,
+                    DatabaseName, SchemaName, TableName, IndexName, PartitionNumber,
+                    SuggestedAction, CommandText,
+                    StartTime, Outcome
+                )
+                VALUES
+                (
+                    @RunID, N'dbo.CCI_Maintain',
+                    @cmdDB, @cmdSchema, @cmdTable, @cmdIndex, @cmdPartition,
+                    @cmdAction, @cmd,
+                    @cmdStart, 'STARTED'
+                );
+
+                SET @CommandLogID = SCOPE_IDENTITY();
+            END
+
+            BEGIN TRY
+                SET @execCmd =
+                    N'USE ' + QUOTENAME(@cmdDB) + N'; '
+                  + CASE WHEN @lockMs IS NULL
+                         THEN N''
+                         ELSE N'SET LOCK_TIMEOUT ' + CAST(@lockMs AS nvarchar(20)) + N'; '
+                    END
+                  + @cmd
+                  + CASE WHEN @lockMs IS NULL
+                         THEN N''
+                         ELSE N' SET LOCK_TIMEOUT -1;'
+                    END;
+
+                EXEC sys.sp_executesql @execCmd;
+
+                IF @delay IS NOT NULL
+                    WAITFOR DELAY @delay;
+
+                -- Log OK
+                IF @CommandLogID IS NOT NULL
+                BEGIN
+                    UPDATE dbo.CCI_CommandLog
+                      SET EndTime = SYSDATETIME(),
+                          DurationSeconds = DATEDIFF(SECOND, @cmdStart, SYSDATETIME()),
+                          Outcome = 'OK'
+                    WHERE CommandLogID = @CommandLogID;
+                END
+            END TRY
+            BEGIN CATCH
+                DECLARE
+                    @ErrNum int = ERROR_NUMBER(),
+                    @ErrSev int = ERROR_SEVERITY(),
+                    @ErrState int = ERROR_STATE(),
+                    @ErrLine int = ERROR_LINE(),
+                    @ErrProc nvarchar(128) = ERROR_PROCEDURE(),
+                    @ErrMsg2 nvarchar(4000) = ERROR_MESSAGE();
+
+                -- Log ERROR
+                IF @CommandLogID IS NOT NULL AND OBJECT_ID(N'dbo.CCI_CommandLog', N'U') IS NOT NULL
+                BEGIN
+                    UPDATE dbo.CCI_CommandLog
+                      SET EndTime = SYSDATETIME(),
+                          DurationSeconds = DATEDIFF(SECOND, @cmdStart, SYSDATETIME()),
+                          Outcome = 'ERROR',
+                          ErrorNumber = @ErrNum,
+                          ErrorSeverity = @ErrSev,
+                          ErrorState = @ErrState,
+                          ErrorLine = @ErrLine,
+                          ErrorProcedure = @ErrProc,
+                          ErrorMessage = @ErrMsg2
+                    WHERE CommandLogID = @CommandLogID;
+                END
+                ELSE IF @LogToTable = 1 AND OBJECT_ID(N'dbo.CCI_CommandLog', N'U') IS NOT NULL
+                BEGIN
+                    INSERT dbo.CCI_CommandLog
+                    (
+                        RunID, ProcName,
+                        DatabaseName, SchemaName, TableName, IndexName, PartitionNumber,
+                        SuggestedAction, CommandText,
+                        StartTime, EndTime, DurationSeconds,
+                        Outcome, ErrorNumber, ErrorSeverity, ErrorState, ErrorLine, ErrorProcedure, ErrorMessage
+                    )
+                    VALUES
+                    (
+                        @RunID, N'dbo.CCI_Maintain',
+                        @cmdDB, @cmdSchema, @cmdTable, @cmdIndex, @cmdPartition,
+                        @cmdAction, @cmd,
+                        @cmdStart, SYSDATETIME(), DATEDIFF(SECOND, @cmdStart, SYSDATETIME()),
+                        'ERROR', @ErrNum, @ErrSev, @ErrState, @ErrLine, @ErrProc, @ErrMsg2
+                    );
+                END
+
+                RAISERROR('CCI_Maintain: Command failed in %s - %s', 10, 1, @cmdDB, @ErrMsg2) WITH NOWAIT;
+            END CATCH;
+
+            FETCH NEXT FROM c INTO @cmdDB, @cmdSchema, @cmdTable, @cmdIndex, @cmdPartition, @cmdAction, @cmd;
+        END
+
+        CLOSE c;
+        DEALLOCATE c;
+
+        -- Close run header (if not already closed by timelimit)
+        IF @LogToTable = 1 AND OBJECT_ID(N'dbo.CCI_RunLog', N'U') IS NOT NULL
+        BEGIN
+            UPDATE dbo.CCI_RunLog
+              SET EndTime = COALESCE(EndTime, SYSDATETIME()),
+                  StopReason = COALESCE(StopReason, N'Completed normally.')
+            WHERE RunID = @RunID;
+        END
+    END
+    ELSE
+    BEGIN
+        -- If not executing, still close run log cleanly
+        IF @LogToTable = 1 AND OBJECT_ID(N'dbo.CCI_RunLog', N'U') IS NOT NULL
+        BEGIN
+            UPDATE dbo.CCI_RunLog
+              SET EndTime = SYSDATETIME(),
+                  StopReason = N'Report only (Execute=0).'
+            WHERE RunID = @RunID;
+        END
+    END
+
+    -------------------------------------------------------------------------
+    -- DB run summary
+    -------------------------------------------------------------------------
+    SELECT DatabaseName, StartTime, EndTime, Status, Info
+    FROM #db_run
+    ORDER BY
+      CASE Status WHEN 'ERROR' THEN 4 WHEN 'SKIPPED' THEN 3 WHEN 'OK' THEN 2 ELSE 1 END DESC,
+      DatabaseName;
+END
