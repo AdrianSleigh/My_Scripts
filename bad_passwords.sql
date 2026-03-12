@@ -126,20 +126,83 @@ BEGIN
     END
 
     -------------------------------------------------------------------
-    -- 1. Default roots
+    -- 1. Default roots most common passwords 2025
     -------------------------------------------------------------------
     SELECT root
     INTO #Default
-    FROM (VALUES
-        ('password'),('pass'),('admin'),('letmein'),('welcome'),
-        ('monkey'),('dragon'),('football'),('qwerty'),('abc123'),
-        ('iloveyou'),('sunshine'),('princess'),('superman'),('pokemon'),
-        ('bella'),('milo'),('luna'),('charlie'),('max'),('daisy'),('poppy'),
-        ('london'),('manchester'),('liverpool'),('birmingham'),
-        ('leeds'),('glasgow'),
-        ('james'),('john'),('robert'),('michael'),('david'),
-        ('oliver'),('harry'),('george'),('amelia')
-    ) AS d(root);
+
+  FROM (VALUES
+('123456'),('admin'),('12345678'),('123456789'),('12345'),
+('password'),('Aa123456'),('1234567890'),('Pass@123'),('admin123'),
+('1234567'),('123123'),('111111'),('12345678910'),('P@ssw0rd'),
+('Password'),('Aa@123456'),('admintelecom'),('Admin@123'),('112233'),
+('qwerty'),('qwerty123'),('qwertyuiop'),('iloveyou'),('welcome'),
+('dragon'),('football'),('monkey'),('letmein'),('abc123'),
+('superman'),('princess'),('sunshine'),('pokemon'),('charlie'),
+('bella'),('milo'),('luna'),('max'),('daisy'),
+('poppy'),('london'),('manchester'),('liverpool'),('birmingham'),
+('leeds'),('glasgow'),('james'),('john'),('robert'),
+('michael'),('david'),('oliver'),('harry'),('george'),
+('amelia'),('654321'),('000000'),('121212'),('1q2w3e'),
+('qazwsx'),('asdfgh'),('zxcvbn'),('1qaz2wsx'),('159753'),
+('qwerty1'),('qwerty12'),('qwerty1234'),('qwertyui'),('987654321'),
+('9876543210'),('1234'),('123'),('123321'),('123qwe'),
+('qwe123'),('1q2w3e4r'),('1q2w3e4r5t'),('123456a'),('123456aa'),
+('123456abc'),('123456q'),('123456qq'),('123456z'),('123456x'),
+('123456!'),('123456@'),('123456#'),('123456$'),('123456%'),
+('123456?'),('password1'),('password123'),('password1234'),('password12345'),
+('pass123'),('pass1234'),('pass12345'),('passw0rd'),('p@ssword'),
+('p@ssw0rd'),('admin1'),('admin1234'),('admin12345'),('administrator'),
+('root'),('root123'),('root1234'),('root12345'),('system'),
+('guest'),('guest123'),('guest1234'),('guest12345'),('test'),
+('test1'),('test123'),('test1234'),('test12345'),('login'),
+('login123'),('login1234'),('login12345'),('user'),('user1'),
+('user123'),('user1234'),('user12345'),('default'),('default123'),
+('default1234'),('default12345'),('welcome1'),('welcome123'),('welcome1234'),
+('welcome12345'),('qwert'),('qwert1'),('qwert12'),('qwert12345'),
+('qwerty!'),('qwerty@'),('qwerty#'),('qwerty$'),('qwerty%'),
+('iloveyou1'),('iloveyou123'),('iloveyou1234'),('iloveyou12345'),
+('love'),('love123'),('love1234'),('love12345'),('loveyou'),
+('loveyou1'),('loveyou123'),('loveyou1234'),('loveyou12345'),
+('1111111'),('11111111'),('111111111'),('222222'),('333333'),
+('444444'),('555555'),('666666'),('777777'),('888888'),
+('999999'),('123654'),('654123'),('147258'),('258369'),
+('369258'),('147852'),('852369'),('123abc'),('abc1234'),
+('abc12345'),('abc123456'),('abcdef'),('abcdefg'),('abcdefgh'),
+('abcd1234'),('abcd12345'),('abcd123456'),('1password'),('mypassword'),
+('mypassword1'),('mypassword123'),('mypassword1234'),('mypassword12345'),
+('letmein1'),('letmein123'),('letmein1234'),('letmein12345'),
+('football1'),('football123'),('football1234'),('football12345'),
+('baseball'),('baseball1'),('baseball123'),('baseball1234'),
+('soccer'),('soccer1'),('soccer123'),('soccer1234'),
+('hockey'),('hockey1'),('hockey123'),('hockey1234'),
+('basketball'),('basketball1'),('basketball123'),('basketball1234'),
+('superman1'),('superman123'),('superman1234'),('superman12345'),
+('batman'),('batman1'),('batman123'),('batman1234'),
+('spiderman'),('spiderman1'),('spiderman123'),('spiderman1234'),
+('pokemon1'),('pokemon123'),('pokemon1234'),('pokemon12345'),
+('starwars'),('starwars1'),('starwars123'),('starwars1234'),
+('harrypotter'),('harrypotter1'),('harrypotter123'),('harrypotter1234'),
+('liverpool1'),('liverpool123'),('liverpool1234'),('liverpool12345'),
+('arsenal'),('arsenal1'),('arsenal123'),('arsenal1234'),
+('chelsea'),('chelsea1'),('chelsea123'),('chelsea1234'),
+('manchester1'),('manchester123'),('manchester1234'),('manchester12345'),
+('taylor'),('taylor1'),('taylor123'),('taylor1234'),
+('summer'),('summer1'),('summer123'),('summer1234'),
+('winter'),('winter1'),('winter123'),('winter1234'),
+('hello'),('hello1'),('hello123'),('hello1234'),
+('welcome!'),('welcome@'),('welcome#'),('welcome$'),
+('qwerty2024'),('qwerty2025'),('qwerty2026'),('password2024'),
+('password2025'),('password2026'),('admin2024'),('admin2025'),
+('admin2026'),('1234562024'),('1234562025'),('1234562026')
+)
+
+)
+
+        
+        
+        
+        AS d(root);
 
     -------------------------------------------------------------------
     -- 2. User roots
@@ -434,3 +497,4 @@ GO
 -- SHA256:  <PLACEHOLDER — COMPUTE AFTER FINAL SAVE>
 
 /*=====================================================================*/
+
