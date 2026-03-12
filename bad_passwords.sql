@@ -1,21 +1,70 @@
--- Ref: http://www.smartplanet.com/blog/business-brains/the-25-worst-passwords-of-2011-8216password-8216123456-8242/20065
 /*=====================================================================
     SQL SERVER WEAK PASSWORD GENERATOR & AUDIT TOOL
     ------------------------------------------------
-    SAFETY NOTICE:
-    This script uses PWDCOMPARE to evaluate SQL login password hashes
-    against a generated weak-password list.
-
-    PWDCOMPARE DOES NOT:
-      - Perform login attempts
-      - Trigger authentication
-      - Increment lockout counters
-      - Generate failed login events
-      - Lock or disable accounts
-
     PWDCOMPARE ONLY compares a plaintext candidate to a stored hash.
     This method is Microsoft-supported and completely safe to run in
     production environments.
+INSTRUCTIONS 1.Run GenerateWeakPasswords 2.Run CheckWeakSQLPasswords 3. Results written to WeakPasswordHits table
+EXAMPLES:
+MODE1--------
+EXEC dbo.GenerateWeakPasswords
+    @Mode = 1,
+    @TargetCount = 100000;
+MODE2--------
+EXEC dbo.GenerateWeakPasswords
+    @Mode = 2,
+    @Roots = 'telford,tenby,poppy,luna',
+    @TargetCount = 100000;
+MODE3--------
+EXEC dbo.GenerateWeakPasswords
+    @Mode = 3,
+    @Roots = 'bankofengland,boe,threadneedle',
+    @CsvPath = 'C:\lists\extra_roots.csv',
+    @UseDictionary = 1,
+    @TargetCount = 100000;
+MODE4--------
+EXEC dbo.GenerateWeakPasswords
+    @Mode = 4,
+    @CsvPath = 'C:\lists\extra_roots.csv',
+    @TargetCount = 100000;
+PREVIEWMODE--------
+EXEC dbo.GenerateWeakPasswords
+    @Mode = 3,
+    @Roots = 'telford,tenby',
+    @CsvPath = 'C:\lists\extra_roots.csv',
+    @Preview = 1;
+DISABLE DEFAULTS--------
+EXEC dbo.GenerateWeakPasswords
+    @Mode = 3,
+    @Roots = 'boe,bank,finance',
+    @CsvPath = 'C:\lists\finance_roots.csv',
+    @IncludeDefaults = 0;
+DISABLE SUFFIXES,NUMBERS,REPEATS,SUBS-------
+EXEC dbo.GenerateWeakPasswords
+    @Mode = 3,
+    @IncludeSuffixes = 0,
+    @IncludeNumbers = 0,
+    @IncludeRepeats = 0,
+    @IncludeSubstitutions = 0;
+DICTIONARY ONLY--------
+EXEC dbo.GenerateWeakPasswords
+    @Mode = 3,
+    @UseDictionary = 1,
+    @IncludeDefaults = 0,
+    @Roots = NULL,
+    @CsvPath = NULL;
+
+RUN THE AUDIT AFTER GENERATION
+EXEC dbo.CheckWeakSqlPasswords;
+
+
+
+
+
+
+
+
+
 
     VERSION HEADER:
       Build: 2026.03.12.01
@@ -497,4 +546,5 @@ GO
 -- SHA256:  <PLACEHOLDER — COMPUTE AFTER FINAL SAVE>
 
 /*=====================================================================*/
+
 
