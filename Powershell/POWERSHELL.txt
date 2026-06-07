@@ -1,0 +1,125 @@
+POWERSHELL
+install
+get the cmdlet
+1.
+Save-Module -Name SqlServer -Path "C:\Modules"
+
+
+checks its there in explorer or....
+
+2.
+Get-ChildItem -Path C:\modules 
+
+3. Copy the $env:TEMP\SQLServer\<SomeVersion> folder you found in step 2 to the destination offline computer in %ProgramFiles%\WindowsPowerShell\Modules\SqlServer folder (this folder would work for both PS5 and PS7). Be sure to replace <SomeVersion> with the value you found in the previous step
+
+4. Confirm that the SqlServer PowerShell module is available on the offline computer by running the following PowerShell cmdlet:
+
+
+Get-Module SqlServer -ListAvailable
+
+Get-Module SqlServer -ListAvailable
+
+(Get-Module SqlServer).Version
+
+overwrite version  .... Install-Module -Name SqlServer -AllowClobber
+
+
+-- Step 1: Backup SSAS Databases
+BACKUP DATABASE [YourDatabaseName] TO DISK = 'C:\Backups\YourDatabaseName.abf' WITH COMPRESSION;
+
+-- Step 2: Upgrade SSAS Instance
+-- Run the SQL Server setup program and specify the existing instance name to upgrade
+
+-- Step 3: Post-Upgrade Tasks
+-- Reconfigure settings, such as ports and server administrators
+EXEC sp_configure 'show advanced options', 1;
+RECONFIGURE;
+EXEC sp_configure 'Ad Hoc Distributed Queries', 1;
+RECONFIGURE;
+
+-- Step 4: Verify Upgrade
+-- Check database integrity
+DBCC CHECKDB('YourDatabaseName');
+
+-- Test reports, spreadsheets, and dashboards to confirm everything is working correctly
+
+
+-------------------------------------------------------------
+step 2
+
+# Define variables
+$setupFilePath = "C:\Path\To\SQLServer2019Setup.exe"
+$instanceName = "YourInstanceName"
+$instanceDirectory = "C:\Path\To\SQLServerInstance"
+
+# Run the SQL Server setup program for in-place upgrade
+Start-Process -FilePath $setupFilePath -ArgumentList "/ACTION=install /INSTANCENAME=$instanceName /INSTALLSQLDATADIR=$instanceDirectory /SQLSVCACCOUNT=`"NT AUTHORITY\SYSTEM`" /SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`" /AGTSVCACCOUNT=`"NT AUTHORITY\SYSTEM`" /IACCEPTSQLSERVERLICENSETERMS" -Wait
+
+Write-Output "Upgrade process completed."
+
+--------------------------------------------------------------
+#SSAS upgrade
+
+# Define variables
+$setupFilePath = "C:\Path\To\SQLServer2019Setup.exe"
+$instanceName = "YourSSASInstanceName"
+
+# Run the SQL Server setup program for in-place upgrade of SSAS
+Start-Process -FilePath $setupFilePath -ArgumentList "/ACTION=upgrade /INSTANCENAME=$instanceName /FEATURES=AS /IACCEPTSQLSERVERLICENSETERMS" -Wait
+
+Write-Output "SSAS upgrade process completed."
+
+
+-------------------------------------------------------------
+#SSIS upgrade
+ 
+# Define variables
+$setupFilePath = "C:\Path\To\SQLServer2019Setup.exe"
+$instanceName = "YourSSISInstanceName"
+
+# Run the SQL Server setup program for in-place upgrade of SSIS
+Start-Process -FilePath $setupFilePath -ArgumentList "/ACTION=upgrade /INSTANCENAME=$instanceName /FEATURES=IS /IACCEPTSQLSERVERLICENSETERMS" -Wait
+
+Write-Output "SSIS upgrade process completed."
+
+--------------------------------------------------------------
+
+#SSRS upgrade
+ 
+# Define variables
+$setupFilePath = "C:\Path\To\SQLServer2019Setup.exe"
+$instanceName = "YourSSRSInstanceName"
+
+# Run the SQL Server setup program for in-place upgrade of SSRS
+Start-Process -FilePath $setupFilePath -ArgumentList "/ACTION=upgrade /INSTANCENAME=$instanceName /FEATURES=RS /IACCEPTSQLSERVERLICENSETERMS" -Wait
+
+Write-Output "SSRS upgrade process completed."
+--------------------------------------------------------------
+
+Step-by-Step Guide for In-Place Upgrade of SSIS
+1. Preparation
+Backup SSIS Packages: Ensure you back up all your SSIS packages and the SSISDB catalog.
+
+Run SQL Server Upgrade Advisor: Use the SQL Server Upgrade Advisor to identify any potential issues before upgrading.
+
+2. Run SQL Server Setup
+Open SQL Server Setup: Run the SQL Server 2019 setup executable (setup.exe).
+
+Specify Upgrade Action: Use the following command to upgrade SSIS:
+
+powershell
+Start-Process -FilePath "C:\Path\To\SQLServer2019Setup.exe" -ArgumentList "/ACTION=upgrade /INSTANCENAME=YourInstanceName /FEATURES=IS /IACCEPTSQLSERVERLICENSETERMS" -Wait
+Replace C:\Path\To\SQLServer2019Setup.exe with the actual path to your setup executable and YourInstanceName with the name of your SQL Server instance.
+
+3. Post-Upgrade Tasks
+Verify SSIS Packages: Check that all your SSIS packages are functioning correctly after the upgrade.
+
+Reconfigure Settings: If necessary, reconfigure any SSIS-related settings, such as connections and configurations.
+
+4. Testing
+Test SSIS Packages: Execute and test your SSIS packages to ensure they work as expected.
+
+Monitor Performance: Monitor the performance of your SSIS packages to ensure there are no issues.
+
+
+

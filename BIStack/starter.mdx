@@ -1,0 +1,33 @@
+
+--basic MDX syntax
+-------------------------------------------------------------
+SELECT { [measures].[measurehere1],[measurehere2] } On COLUMNS 
+FROM [cubename]
+
+-------------------------------------------------------------
+SELECT { [measures].[measurehere1],[measurehere2] } On COLUMNS 
+, { [columnname].[columnnamefield] } On ROWS
+FROM [cubename]
+
+--------------------------------------------------------------
+
+SELECT { [measures].[measurehere1],[measurehere2] } On COLUMNS 
+, NONEMPTY (
+{ [columnname].[columnnamefield] }
+) On ROWS
+FROM [cubename]
+----nonempty removes null values
+
+--------------------------------------------------------------
+
+SELECT { [measures].[measurehere1],[measurehere2] } On COLUMNS 
+, { [columnname].[columnnamefield] } On ROWS
+FROM [cubename]
+WHERE [dimensionname].[dimensionnamevalue]
+
+--------------------------------------------------------------
+--example
+SELECT { [measures].[internet order count] } On COLUMNS 
+FROM [adventure works]
+WHERE [date].[calendar year].&[2005];
+---------------------------------------------------------------
