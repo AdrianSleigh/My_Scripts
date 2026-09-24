@@ -1,0 +1,214 @@
+UpgradeBuddy 
+
+v7.0.1 Official 
+
+Quick Start Guide 
+
+Concise operating guide for PRE assessment, POST validation and evidence capture 
+
+Author: Adrian Sleigh 
+Baseline: UpgradeBuddy v7.0.1 Official 
+Document date: 24 September 2026 
+
+ 
+
+Purpose 
+
+Use this guide when running an assessment or validating an upgrade. It focuses on the minimum parameters, repository workflow and the results that require action. 
+
+ 
+
+1. What UpgradeBuddy Does 
+
+UpgradeBuddy is a SQL Server upgrade readiness, baseline and validation tool. v7.0.1 supports SQL Server 2008/R2 through SQL Server 2025. 
+
+Runs read-only readiness assessments by default. 
+
+Stores PRE and POST evidence when repository SAVE is enabled. 
+
+Captures findings, inventory and compatibility evidence with project, phase, time and instance context. 
+
+Provides repository views for reporting and comparison. 
+
+Returns JSON and CSV result sets when requested; it does not write operating-system files. 
+
+2. Recommended Repository 
+
+Setting 
+
+Recommended value 
+
+Database 
+
+ZDBA 
+
+Schema 
+
+UpgradeBuddy 
+
+Repository mode 
+
+NONE for read-only; SAVE for PRE and POST evidence 
+
+Project name 
+
+Change or project identifier used consistently for PRE and POST 
+
+ 
+
+Important 
+
+Use the same ProjectName for PRE and POST. Repository reporting depends on the stored run context. 
+
+ 
+
+3. Standard Workflow 
+
+Run a read-only assessment and review blockers. 
+
+Run PRE with SAVE to create the formal baseline. 
+
+Complete the SQL Server upgrade or migration. 
+
+Run POST with SAVE using the same ProjectName. 
+
+Review compatibility warnings, regressions and repository views. 
+
+Export or retain evidence for CAB, cyber review and operational sign-off. 
+
+4. Read-Only Assessment 
+
+@TargetMajorVersion = 17 
+@UpgradeMethod      = 'INPLACE' 
+@OutputMode         = 'SUMMARY' 
+@AssessmentPhase    = 'PRE' 
+@RepositoryMode     = 'NONE' 
+@SnapshotFormat     = 'NONE' 
+
+Use this mode for initial investigation. Nothing is written to the repository. 
+
+5. Save the PRE Baseline 
+
+@TargetMajorVersion = 17 
+@UpgradeMethod      = 'INPLACE' 
+@OutputMode         = 'SUMMARY' 
+@AssessmentPhase    = 'PRE' 
+@RepositoryMode     = 'SAVE' 
+@ProjectName        = N'CRQ123456_SQL2019_TO_SQL2025' 
+@SnapshotFormat     = 'BOTH' 
+
+This stores the PRE findings, inventory and compatibility evidence in the configured repository. 
+
+6. Save the POST Validation 
+
+@TargetMajorVersion = 17 
+@UpgradeMethod      = 'INPLACE' 
+@OutputMode         = 'SUMMARY' 
+@AssessmentPhase    = 'POST' 
+@RepositoryMode     = 'SAVE' 
+@ProjectName        = N'CRQ123456_SQL2019_TO_SQL2025' 
+@SnapshotFormat     = 'BOTH' 
+
+POST uses the same project name. v7.0.1 stores the new evidence and repository views expose the PRE/POST position. 
+
+7. How to Read the Status 
+
+Status 
+
+Meaning 
+
+Response 
+
+FAIL 
+
+Upgrade blocker or material regression 
+
+Resolve or obtain formal exception before approval. 
+
+WARN 
+
+Risk or follow-up required 
+
+Remediate, plan uplift or document acceptance. 
+
+NOT CHECKED 
+
+Evidence could not be collected 
+
+Correct permissions or validate manually. 
+
+MANUAL 
+
+Human evidence is required 
+
+Attach or record supporting evidence. 
+
+INFO 
+
+Context or planned follow-up 
+
+Review and retain as evidence. 
+
+PASS 
+
+Check completed successfully 
+
+No action required. 
+
+ 
+
+8. Compatibility Rules 
+
+CompatibilityFact stores one PRE or POST row for master and each user database. 
+
+A POST compatibility level lower than PRE is a regression: ALERT REQUIRED / FAIL. 
+
+A POST compatibility level below the installed instance maximum is WARN / uplift required. 
+
+master is included because its compatibility level does not automatically uplift with the engine. 
+
+System databases that automatically follow the engine are not treated as user-database compatibility regressions. 
+
+Example 
+
+A database at compatibility 150 on SQL Server 2025 has not regressed if PRE was also 150, but it remains below the installed maximum of 170. The expected outcome is WARN / uplift required, not FAIL. 
+
+ 
+
+9. Repository Tables 
+
+Table 
+
+Purpose 
+
+AssessmentFinding 
+
+Actionable and informational checks with project, phase, time and instance context. 
+
+InventoryFact 
+
+Configuration and inventory evidence with run context and InstanceMaxCompatibility. 
+
+CompatibilityFact 
+
+Dedicated PRE and POST compatibility evidence for master and user databases. 
+
+ 
+
+10. Final Sign-off Checklist 
+
+☐ No unresolved FAIL items. 
+
+☐ Every NOT CHECKED item has been rerun or manually evidenced. 
+
+☐ Compatibility regressions have been investigated. 
+
+☐ Compatibility below the installed maximum has an agreed uplift plan or acceptance. 
+
+☐ PRE and POST repository rows use the correct ProjectName and instance. 
+
+☐ Evidence has been retained for CAB/cyber review. 
+
+Baseline 
+
+This guide applies to UpgradeBuddy v7.0.1 Official.  
