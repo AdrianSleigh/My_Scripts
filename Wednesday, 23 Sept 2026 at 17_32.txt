@@ -1,0 +1,841 @@
+UpgradeBuddy v7.0.1 Official
+
+23 September 2026
+17:04
+
+/*=========================================================
+UpgradeBuddy v7.0.1 Official
+Author: Adrian Sleigh
+Date: 22/09/2026
+SQL Server Upgrade Readiness, Baseline & Validation Tool
+Supports: SQL 2008/R2, 2012, 2014, 2016, 2017, 2019, 2022, 2025
+--------------------------------------------------------------------
+Default mode is read-only. SAVE writes assessment, finding and inventory evidence to the configured repository. JSON/CSV are returned as result sets for
+saving from SSMS or SQLCMD. The script does not enable xp_cmdshell or write OS files.
+
+=========================================================
+QUICK START EXAMPLES
+=========================================================
+
+Example 1 - Standard Read-Only Assessment
+@TargetMajorVersion=15; @UpgradeMethod='INPLACE'; @OutputMode='SUMMARY';
+@AssessmentPhase='PRE'; @RepositoryMode='NONE'; @SnapshotFormat='NONE';
+
+Example 2 - Save PRE Baseline
+@TargetMajorVersion=15; @AssessmentPhase='PRE'; @RepositoryMode='SAVE';
+@ProjectName=N'CRQ123456_SQL2016_TO_SQL2019'; @SnapshotFormat='BOTH';
+
+Example 3 - Save POST Validation
+@TargetMajorVersion=15; @AssessmentPhase='POST'; @RepositoryMode='SAVE';
+@ProjectName=N'CRQ123456_SQL2016_TO_SQL2019'; @SnapshotFormat='BOTH';
+Example 4 - Review POST compatibility and drift
+SELECT * FROM ZDBA.UpgradeBuddy.vw_PostCompatibilityStatus WHERE ProjectName=N'CRQ123456_SQL2016_TO_SQL2019';
+SELECT * FROM ZDBA.UpgradeBuddy.vw_ActionRequiredPostChanges WHERE ProjectName=N'CRQ123456_SQL2016_TO_SQL2019';
+
+Example 4 - Side-by-Side Migration
+@TargetMajorVersion=17; @UpgradeMethod='MIGRATION'; @AssessmentPhase='POST';
+@RepositoryMode='SAVE'; @ProjectName=N'CHG999999_SQL2025_MIGRATION';
+@SnapshotFormat='BOTH';
+=========================================================*/
+
+SET NOCOUNT ON;
+SET XACT_ABORT OFF;
+
+-- USER OPTIONS
+DECLARE @TargetMajorVersion int      = 17;          -- 15=SQL2019 | 16=SQL2022 | 17=SQL2025
+DECLARE @UpgradeMethod varchar(20)   = 'INPLACE';   -- INPLACE | MIGRATION
+DECLARE @OutputMode varchar(20)      = 'SUMMARY';   -- EXECUTIVE | SUMMARY | FULL | BOTH
+DECLARE @AssessmentPhase varchar(10) = 'PRE';       -- PRE | POST
+DECLARE @RepositoryMode varchar(20)  = 'NONE';      -- NONE | SAVE
+DECLARE @SnapshotFormat varchar(10)  = 'NONE';      -- NONE | JSON | CSV | BOTH
+DECLARE @ProjectName nvarchar(128)   = N'BuddyTest1';         -- Required for SAVE
+DECLARE @TargetEdition nvarchar(50)  = N'SAME';     -- SAME | ENTERPRISE | STANDARD | WEB | DEVELOPER
+DECLARE @RepositoryDatabase sysname  = N'DBA';
+DECLARE @RepositorySchema sysname    = N'UpgradeBuddy';
+DECLARE @RepositoryCreateMode varchar(20)= 'USE_EXISTING'; -- USE_EXISTING | CREATE_DATABASE
+DECLARE @VolumeWarnFreePct decimal(5,2)=10.00;
+DECLARE @VolumeFailFreePct decimal(5,2)=5.00;
+DECLARE @FullBackupMaxAgeDays int    = 7;
+DECLARE @LogBackupMaxAgeHours int    = 24;
+DECLARE @DBCCMaxAgeDays int          = 14;
+DECLARE @VLFWarnCount int            = 500;
+DECLARE @VLFFailCount int            = 1000;
+DECLARE @UseRestoreEvidence bit      = 0;           -- 0=Off | 1=On
+DECLARE @RestoreEvidenceMaxAgeDays int=90;
+DECLARE @RequireRestoreVerifyEvidence bit=1;        -- 1=Add manual verification evidence gate
+DECLARE @IncludeErrorLogScan bit=0;                  -- 0=Off | 1=Current SQL error log
+DECLARE @NumericChangeTolerancePct decimal(6,2)=5.00;
+DECLARE @Environment nvarchar(30)    = N'';
+DECLARE @LogicalService nvarchar(128)= N'';
+DECLARE @ShowUpgradeMatrix bit=0;                    -- 0=Evaluated path only | 1=Full matrix
+-- END DECLARATIONS
+
+SET @UpgradeMethod=UPPER(LTRIM(RTRIM(@UpgradeMethod)));
+SET @OutputMode=UPPER(LTRIM(RTRIM(@OutputMode)));
+SET @AssessmentPhase=UPPER(LTRIM(RTRIM(@AssessmentPhase)));
+SET @RepositoryMode=UPPER(LTRIM(RTRIM(@RepositoryMode)));
+SET @SnapshotFormat=UPPER(LTRIM(RTRIM(@SnapshotFormat)));
+SET @TargetEdition=UPPER(LTRIM(RTRIM(@TargetEdition)));
+SET @RepositoryCreateMode=UPPER(LTRIM(RTRIM(@RepositoryCreateMode)));
+IF @TargetMajorVersion NOT IN(15,16,17) BEGIN RAISERROR('Target must be 15, 16 or 17.',16,1); RETURN; END;
+IF @UpgradeMethod NOT IN('INPLACE','MIGRATION') BEGIN RAISERROR('UpgradeMethod must be INPLACE or MIGRATION.',16,1); RETURN; END;
+IF @OutputMode NOT IN('EXECUTIVE','SUMMARY','FULL','BOTH') BEGIN RAISERROR('OutputMode must be EXECUTIVE, SUMMARY, FULL or BOTH.',16,1); RETURN; END;
+IF @AssessmentPhase NOT IN('PRE','POST') BEGIN RAISERROR('AssessmentPhase must be PRE or POST.',16,1); RETURN; END;
+IF @RepositoryMode NOT IN('NONE','SAVE') BEGIN RAISERROR('RepositoryMode must be NONE or SAVE.',16,1); RETURN; END;
+IF @SnapshotFormat NOT IN('NONE','JSON','CSV','BOTH') BEGIN RAISERROR('SnapshotFormat must be NONE, JSON, CSV or BOTH.',16,1); RETURN; END;
+IF @RepositoryCreateMode NOT IN('USE_EXISTING','CREATE_DATABASE') BEGIN RAISERROR('RepositoryCreateMode must be USE_EXISTING or CREATE_DATABASE.',16,1); RETURN; END;
+IF @TargetMajorVersion=17 AND @TargetEdition=N'WEB' BEGIN RAISERROR('WEB is not valid for SQL Server 2025.',16,1); RETURN; END;
+IF @RepositoryMode='SAVE' AND LTRIM(RTRIM(ISNULL(@ProjectName,N'')))=N'' BEGIN RAISERROR('ProjectName is required for SAVE.',16,1); RETURN; END;
+
+DECLARE @Now datetime2(0)=SYSDATETIME(),@RunId uniqueidentifier=NEWID();
+DECLARE @Instance sysname=COALESCE(CONVERT(sysname,SERVERPROPERTY('ServerName')),@@SERVERNAME);
+DECLARE @Machine sysname=CONVERT(sysname,SERVERPROPERTY('MachineName'));
+DECLARE @Edition nvarchar(256)=CONVERT(nvarchar(256),SERVERPROPERTY('Edition'));
+DECLARE @Version nvarchar(128)=CONVERT(nvarchar(128),SERVERPROPERTY('ProductVersion'));
+DECLARE @Level nvarchar(128)=CONVERT(nvarchar(128),SERVERPROPERTY('ProductLevel'));
+DECLARE @Major int=CASE WHEN ISNUMERIC(LEFT(CONVERT(nvarchar(128),SERVERPROPERTY('ProductVersion')),CHARINDEX('.',CONVERT(nvarchar(128),SERVERPROPERTY('ProductVersion'))+'.')-1))=1 THEN CONVERT(int,LEFT(CONVERT(nvarchar(128),SERVERPROPERTY('ProductVersion')),CHARINDEX('.',CONVERT(nvarchar(128),SERVERPROPERTY('ProductVersion'))+'.')-1)) END;
+DECLARE @Target sysname=CASE @TargetMajorVersion WHEN 15 THEN N'SQL Server 2019' WHEN 16 THEN N'SQL Server 2022' WHEN 17 THEN N'SQL Server 2025' END;
+DECLARE @TargetCompat int=CASE @TargetMajorVersion WHEN 15 THEN 150 WHEN 16 THEN 160 WHEN 17 THEN 170 END;
+DECLARE @InstanceMaxCompat int=CASE @Major WHEN 10 THEN 100 WHEN 11 THEN 110 WHEN 12 THEN 120 WHEN 13 THEN 130 WHEN 14 THEN 140 WHEN 15 THEN 150 WHEN 16 THEN 160 WHEN 17 THEN 170 END;
+DECLARE @Hadr int=CASE WHEN CONVERT(int,LEFT(@Version,CHARINDEX('.',@Version+'.')-1))>=11 THEN CONVERT(int,ISNULL(SERVERPROPERTY('IsHadrEnabled'),0)) ELSE 0 END;
+DECLARE @sql nvarchar(max),@db sysname;
+DECLARE @RepositoryReady bit=0;
+DECLARE @QuotedRepositorySchema nvarchar(258)=QUOTENAME(@RepositorySchema);
+
+/* Auto-generate ProjectName for ad-hoc assessments */
+IF LTRIM(RTRIM(ISNULL(@ProjectName,N'')))=N''
+   AND @RepositoryMode='NONE'
+BEGIN
+    SET @ProjectName =
+        N'ADHOC_' +
+        REPLACE(@Instance,N'\',N'_') +
+        N'_' +
+        CONVERT(nchar(8),GETDATE(),112);
+END;
+
+IF OBJECT_ID('tempdb..#C') IS NOT NULL DROP TABLE #C;
+IF OBJECT_ID('tempdb..#I') IS NOT NULL DROP TABLE #I;
+IF OBJECT_ID('tempdb..#CompatibilityFact') IS NOT NULL DROP TABLE #CompatibilityFact;
+IF OBJECT_ID('tempdb..#VLF') IS NOT NULL DROP TABLE #VLF;
+IF OBJECT_ID('tempdb..#LI08') IS NOT NULL DROP TABLE #LI08;
+IF OBJECT_ID('tempdb..#LI12') IS NOT NULL DROP TABLE #LI12;
+CREATE TABLE #C(ID int IDENTITY PRIMARY KEY,CheckCode varchar(40),CheckGroup nvarchar(64),ScopeType nvarchar(32),ScopeName nvarchar(256),CheckName nvarchar(256),Status nvarchar(20),ActionRequired bit,Detail nvarchar(max),SuggestedFix nvarchar(max),SortOrder int);
+CREATE TABLE #I(Category nvarchar(64),ObjectType nvarchar(64),ObjectName nvarchar(512),PropertyName nvarchar(128),PropertyValue nvarchar(max),ComparePolicy varchar(20),IsCritical bit);
+CREATE TABLE #CompatibilityFact(DatabaseName sysname,CompatibilityLevel int,InstanceMaxCompatibility int,DatabaseClass varchar(10));
+CREATE TABLE #VLF(DatabaseName sysname,VLFCount int,MethodUsed nvarchar(50));
+CREATE TABLE #LI08(FileId tinyint,FileSize bigint,StartOffset bigint,FSeqNo int,Status tinyint,Parity tinyint,CreateLSN numeric(25,0));
+CREATE TABLE #LI12(RecoveryUnitId int,FileId tinyint,FileSize bigint,StartOffset bigint,FSeqNo int,Status tinyint,Parity tinyint,CreateLSN numeric(25,0));
+
+/* VERSION AND PATH */
+IF OBJECT_ID('tempdb..#UpgradePath') IS NOT NULL DROP TABLE #UpgradePath;
+CREATE TABLE #UpgradePath
+(
+ SourceMajor int,
+ SourceVersion nvarchar(40),
+ MinimumLevel nvarchar(20),
+ TargetMajor int,
+ TargetVersion nvarchar(40),
+ DirectInPlaceSupported bit,
+ PathStatus nvarchar(20),
+ PathMessage nvarchar(1000)
+);
+
+INSERT #UpgradePath VALUES
+(10,N'SQL Server 2008',N'Not applicable',15,N'SQL Server 2019',0,N'FAIL',N'Direct in-place upgrade is not supported. Use side-by-side migration, or a separately validated staged upgrade path.'),
+(10,N'SQL Server 2008 R2',N'Not applicable',15,N'SQL Server 2019',0,N'FAIL',N'Direct in-place upgrade is not supported. Use side-by-side migration, or a separately validated staged upgrade path.'),
+(11,N'SQL Server 2012',N'SP4 or later',15,N'SQL Server 2019',1,N'PASS',N'Direct in-place upgrade is supported from SQL Server 2012 SP4 or later.'),
+(12,N'SQL Server 2014',N'SP2 or later',15,N'SQL Server 2019',1,N'PASS',N'Direct in-place upgrade is supported from SQL Server 2014 SP2 or later.'),
+(13,N'SQL Server 2016',N'RTM or later',15,N'SQL Server 2019',1,N'PASS',N'Direct in-place upgrade is supported.'),
+(14,N'SQL Server 2017',N'RTM or later',15,N'SQL Server 2019',1,N'PASS',N'Direct in-place upgrade is supported.'),
+(15,N'SQL Server 2019',N'Same version',15,N'SQL Server 2019',0,N'WARN',N'Source and target are the same major version.'),
+
+(10,N'SQL Server 2008',N'Not applicable',16,N'SQL Server 2022',0,N'FAIL',N'Direct in-place upgrade is not supported. Use side-by-side migration.'),
+(10,N'SQL Server 2008 R2',N'Not applicable',16,N'SQL Server 2022',0,N'FAIL',N'Direct in-place upgrade is not supported. Use side-by-side migration.'),
+(11,N'SQL Server 2012',N'SP4 or later',16,N'SQL Server 2022',1,N'PASS',N'Direct in-place upgrade is supported from SQL Server 2012 SP4 or later.'),
+(12,N'SQL Server 2014',N'SP3 or later',16,N'SQL Server 2022',1,N'PASS',N'Direct in-place upgrade is supported from SQL Server 2014 SP3 or later.'),
+(13,N'SQL Server 2016',N'SP3 or later',16,N'SQL Server 2022',1,N'PASS',N'Direct in-place upgrade is supported from SQL Server 2016 SP3 or later.'),
+(14,N'SQL Server 2017',N'RTM or later',16,N'SQL Server 2022',1,N'PASS',N'Direct in-place upgrade is supported.'),
+(15,N'SQL Server 2019',N'RTM or later',16,N'SQL Server 2022',1,N'PASS',N'Direct in-place upgrade is supported.'),
+(16,N'SQL Server 2022',N'Same version',16,N'SQL Server 2022',0,N'WARN',N'Source and target are the same major version.'),
+
+(10,N'SQL Server 2008',N'Not applicable',17,N'SQL Server 2025',0,N'FAIL',N'Direct in-place upgrade is not supported. Use side-by-side migration.'),
+(10,N'SQL Server 2008 R2',N'Not applicable',17,N'SQL Server 2025',0,N'FAIL',N'Direct in-place upgrade is not supported. Use side-by-side migration.'),
+(11,N'SQL Server 2012',N'Not applicable',17,N'SQL Server 2025',0,N'FAIL',N'Direct in-place upgrade is not supported. Use side-by-side migration.'),
+(12,N'SQL Server 2014',N'SP3 or later',17,N'SQL Server 2025',1,N'PASS',N'Direct in-place upgrade is supported from SQL Server 2014 SP3 or later.'),
+(13,N'SQL Server 2016',N'SP3 or later',17,N'SQL Server 2025',1,N'PASS',N'Direct in-place upgrade is supported from SQL Server 2016 SP3 or later.'),
+(14,N'SQL Server 2017',N'RTM or later',17,N'SQL Server 2025',1,N'PASS',N'Direct in-place upgrade is supported.'),
+(15,N'SQL Server 2019',N'RTM or later',17,N'SQL Server 2025',1,N'PASS',N'Direct in-place upgrade is supported.'),
+(16,N'SQL Server 2022',N'RTM or later',17,N'SQL Server 2025',1,N'PASS',N'Direct in-place upgrade is supported.'),
+(17,N'SQL Server 2025',N'Same version',17,N'SQL Server 2025',0,N'WARN',N'Source and target are the same major version.');
+
+DECLARE @SourcePathName nvarchar(40);
+SET @SourcePathName=CASE
+ WHEN @Version LIKE N'10.0.%' THEN N'SQL Server 2008'
+ WHEN @Version LIKE N'10.50.%' THEN N'SQL Server 2008 R2'
+ WHEN @Major=11 THEN N'SQL Server 2012'
+ WHEN @Major=12 THEN N'SQL Server 2014'
+ WHEN @Major=13 THEN N'SQL Server 2016'
+ WHEN @Major=14 THEN N'SQL Server 2017'
+ WHEN @Major=15 THEN N'SQL Server 2019'
+ WHEN @Major=16 THEN N'SQL Server 2022'
+ WHEN @Major=17 THEN N'SQL Server 2025'
+ ELSE N'Unknown' END;
+
+DECLARE @PathStatus nvarchar(20),@PathDetail nvarchar(1000),
+ @PathFix nvarchar(1000),@RequiredLevel nvarchar(20),@DirectSupported bit;
+SELECT @PathStatus=PathStatus,@PathDetail=PathMessage,
+ @RequiredLevel=MinimumLevel,@DirectSupported=DirectInPlaceSupported
+FROM #UpgradePath
+WHERE SourceVersion=@SourcePathName AND TargetMajor=@TargetMajorVersion;
+
+IF @Major IS NULL OR @PathStatus IS NULL
+ SELECT @PathStatus=N'NOT CHECKED',@PathDetail=N'The source-to-target path could not be resolved.',@PathFix=N'Confirm the exact source build and target path manually.';
+ELSE IF @Major>@TargetMajorVersion
+ SELECT @PathStatus=N'FAIL',@PathDetail=N'Downgrade from '+@SourcePathName+N' to '+@Target+N' is not supported.',@PathFix=N'Select a target equal to or newer than the source.';
+ELSE IF @UpgradeMethod=N'MIGRATION' AND @DirectSupported=0 AND @Major<@TargetMajorVersion
+ SELECT @PathStatus=N'INFO',@PathDetail=N'Direct in-place upgrade is not supported. MIGRATION is selected. '+@PathDetail,@PathFix=N'Build the target, migrate databases and server dependencies, test and retain rollback evidence.';
+ELSE IF @UpgradeMethod=N'INPLACE' AND @DirectSupported=0
+ SELECT @PathStatus=N'FAIL',@PathFix=N'Change @UpgradeMethod to MIGRATION, or use a separately validated staged path.';
+ELSE
+BEGIN
+ IF @TargetMajorVersion=15 AND @Major=11 AND UPPER(ISNULL(@Level,N''))<>N'SP4'
+  SELECT @PathStatus=N'FAIL',@PathDetail=N'SQL Server 2012 must be SP4 or later for direct upgrade to SQL Server 2019.',@PathFix=N'Apply SP4 and an approved update, or use MIGRATION.';
+ ELSE IF @TargetMajorVersion=15 AND @Major=12 AND UPPER(ISNULL(@Level,N'')) NOT IN(N'SP2',N'SP3')
+  SELECT @PathStatus=N'FAIL',@PathDetail=N'SQL Server 2014 must be SP2 or later for direct upgrade to SQL Server 2019.',@PathFix=N'Apply SP2/SP3 and an approved update, or use MIGRATION.';
+ ELSE IF @TargetMajorVersion=16 AND @Major=11 AND UPPER(ISNULL(@Level,N''))<>N'SP4'
+  SELECT @PathStatus=N'FAIL',@PathDetail=N'SQL Server 2012 must be SP4 or later for direct upgrade to SQL Server 2022.',@PathFix=N'Apply SP4 and an approved update, or use MIGRATION.';
+ ELSE IF @TargetMajorVersion=16 AND @Major=12 AND UPPER(ISNULL(@Level,N''))<>N'SP3'
+  SELECT @PathStatus=N'FAIL',@PathDetail=N'SQL Server 2014 must be SP3 or later for direct upgrade to SQL Server 2022.',@PathFix=N'Apply SP3 and an approved update, or use MIGRATION.';
+ ELSE IF @TargetMajorVersion=16 AND @Major=13 AND UPPER(ISNULL(@Level,N''))<>N'SP3'
+  SELECT @PathStatus=N'FAIL',@PathDetail=N'SQL Server 2016 must be SP3 or later for direct upgrade to SQL Server 2022.',@PathFix=N'Apply SP3 and an approved update, or use MIGRATION.';
+ ELSE IF @TargetMajorVersion=17 AND @Major=12 AND UPPER(ISNULL(@Level,N''))<>N'SP3'
+  SELECT @PathStatus=N'FAIL',@PathDetail=N'SQL Server 2014 must be SP3 or later for direct upgrade to SQL Server 2025.',@PathFix=N'Apply SP3 and an approved update, or use MIGRATION.';
+ ELSE IF @TargetMajorVersion=17 AND @Major=13 AND UPPER(ISNULL(@Level,N''))<>N'SP3'
+  SELECT @PathStatus=N'FAIL',@PathDetail=N'SQL Server 2016 must be SP3 or later for direct upgrade to SQL Server 2025.',@PathFix=N'Apply SP3 and an approved update, or use MIGRATION.';
+ ELSE SELECT @PathFix=N'Validate OS, architecture, edition, components, Setup rules and application support.';
+END;
+
+INSERT #C VALUES
+('UPG-INS-002',N'Instance',N'Instance',@Instance,N'Supported upgrade path',
+ @PathStatus,CASE WHEN @PathStatus IN(N'PASS',N'INFO') THEN 0 ELSE 1 END,
+ N'Source='+@SourcePathName+N'; RequiredLevel='+COALESCE(@RequiredLevel,N'Unknown')+N'; '+COALESCE(@PathDetail,N''),
+ COALESCE(@PathFix,N'Validate the path manually.'),15);
+
+
+/* CORE READINESS */
+INSERT #C SELECT 'UPG-DB-'+RIGHT('0000'+CONVERT(varchar(4),database_id),4),N'Databases',N'Database',name,N'Database readiness',CASE WHEN state_desc<>N'ONLINE' THEN N'FAIL' WHEN compatibility_level<100 THEN N'FAIL' WHEN page_verify_option_desc<>N'CHECKSUM' OR is_auto_shrink_on=1 OR is_auto_close_on=1 THEN N'WARN' ELSE N'PASS' END,CASE WHEN state_desc<>N'ONLINE' OR compatibility_level<100 OR page_verify_option_desc<>N'CHECKSUM' OR is_auto_shrink_on=1 OR is_auto_close_on=1 THEN 1 ELSE 0 END,N'State='+state_desc+N'; Compat='+CONVERT(nvarchar(10),compatibility_level)+N'; Recovery='+recovery_model_desc+N'; PageVerify='+page_verify_option_desc,N'Correct blockers before upgrade.',100 FROM sys.databases WHERE database_id>4;
+INSERT #C SELECT 'UPG-CFG-'+RIGHT('000'+CONVERT(varchar(3),ROW_NUMBER() OVER(ORDER BY name)),3),N'Configuration',N'Instance',@Instance,name,CASE WHEN name IN(N'lightweight pooling',N'priority boost') AND value_in_use=1 THEN N'FAIL' WHEN name IN(N'xp_cmdshell',N'clr enabled',N'Ole Automation Procedures',N'Ad Hoc Distributed Queries') AND value_in_use=1 THEN N'WARN' ELSE N'PASS' END,CASE WHEN value_in_use=1 AND name IN(N'lightweight pooling',N'priority boost',N'xp_cmdshell',N'clr enabled',N'Ole Automation Procedures',N'Ad Hoc Distributed Queries') THEN 1 ELSE 0 END,N'value='+CONVERT(nvarchar(30),value_in_use),N'Document and reproduce approved configuration.',110 FROM sys.configurations WHERE name IN(N'max server memory (MB)',N'min server memory (MB)',N'max degree of parallelism',N'cost threshold for parallelism',N'optimize for ad hoc workloads',N'backup compression default',N'clr enabled',N'xp_cmdshell',N'Ole Automation Procedures',N'Ad Hoc Distributed Queries',N'lightweight pooling',N'priority boost');
+INSERT #C SELECT 'UPG-FILE-'+RIGHT('0000'+CONVERT(varchar(4),database_id),4)+'-'+RIGHT('00'+CONVERT(varchar(2),file_id),2),N'File Growth',N'Database',DB_NAME(database_id),N'File growth',CASE WHEN growth=0 OR is_percent_growth=1 OR (growth>0 AND growth/128.0<64) THEN N'WARN' ELSE N'PASS' END,CASE WHEN growth=0 OR is_percent_growth=1 OR (growth>0 AND growth/128.0<64) THEN 1 ELSE 0 END,N'File='+name+N'; Path='+physical_name,N'Pre-size and use approved fixed growth.',120 FROM sys.master_files WHERE database_id>4;
+
+/* VOLUME SPACE */
+IF OBJECT_ID('tempdb..#Volumes') IS NOT NULL DROP TABLE #Volumes;
+CREATE TABLE #Volumes
+(
+ volume_mount_point nvarchar(512),
+ logical_volume_name nvarchar(512),
+ total_bytes bigint,
+ available_bytes bigint
+);
+
+IF @Major>=11
+BEGIN
+ BEGIN TRY
+  SET @sql=N'INSERT #Volumes(volume_mount_point,logical_volume_name,total_bytes,available_bytes)
+  SELECT DISTINCT vs.volume_mount_point,vs.logical_volume_name,vs.total_bytes,vs.available_bytes
+  FROM sys.master_files mf
+  CROSS APPLY sys.dm_os_volume_stats(mf.database_id,mf.file_id) vs;';
+  EXEC(@sql);
+
+  INSERT #C
+  SELECT N'UPG-VOL-'+RIGHT(N'000'+CONVERT(nvarchar(3),ROW_NUMBER() OVER(ORDER BY volume_mount_point)),3),
+   N'Storage',N'Volume',volume_mount_point,N'Volume free space',
+   CASE WHEN total_bytes=0 THEN N'NOT CHECKED'
+        WHEN available_bytes*100.0/total_bytes<@VolumeFailFreePct THEN N'FAIL'
+        WHEN available_bytes*100.0/total_bytes<@VolumeWarnFreePct THEN N'WARN'
+        ELSE N'PASS' END,
+   CASE WHEN total_bytes=0 OR available_bytes*100.0/total_bytes<@VolumeWarnFreePct THEN 1 ELSE 0 END,
+   N'Label='+COALESCE(logical_volume_name,N'')
+    +N'; TotalGB='+CONVERT(nvarchar(30),CONVERT(decimal(18,2),total_bytes/1073741824.0))
+    +N'; FreeGB='+CONVERT(nvarchar(30),CONVERT(decimal(18,2),available_bytes/1073741824.0))
+    +N'; FreePct='+COALESCE(CONVERT(nvarchar(30),CONVERT(decimal(10,2),available_bytes*100.0/NULLIF(total_bytes,0))),N'Unknown'),
+   N'Provide headroom for setup, growth, tempdb and rollback.',130
+  FROM #Volumes;
+
+  INSERT #I
+  SELECT N'Storage',N'Volume',volume_mount_point,N'FreePct',
+   COALESCE(CONVERT(nvarchar(30),CONVERT(decimal(10,2),available_bytes*100.0/NULLIF(total_bytes,0))),N'Unknown'),
+   N'NUMERIC',1
+  FROM #Volumes;
+ END TRY
+ BEGIN CATCH
+  INSERT #C VALUES('UPG-VOL-ERR',N'Storage',N'Instance',@Instance,N'Volume free space',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Check manually.',130);
+ END CATCH;
+END
+ELSE
+ INSERT #C VALUES('UPG-VOL-NA',N'Storage',N'Instance',@Instance,N'Volume free space',N'MANUAL',1,N'Volume DMV unavailable.',N'Check manually.',130);
+
+/* BACKUPS */
+;WITH B AS
+(
+ SELECT d.name,d.recovery_model_desc,d.is_read_only,
+        bf.LastFull,bl.LastLog
+ FROM sys.databases d
+ OUTER APPLY
+ (
+  SELECT TOP(1) bs.backup_finish_date LastFull
+  FROM msdb.dbo.backupset bs
+  WHERE bs.database_name=d.name AND bs.type='D' AND ISNULL(bs.is_copy_only,0)=0
+  ORDER BY bs.backup_finish_date DESC
+ ) bf
+ OUTER APPLY
+ (
+  SELECT TOP(1) bs.backup_finish_date LastLog
+  FROM msdb.dbo.backupset bs
+  WHERE bs.database_name=d.name AND bs.type='L'
+  ORDER BY bs.backup_finish_date DESC
+ ) bl
+ WHERE d.database_id>4
+)
+INSERT #C
+SELECT 'UPG-BKP-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N'Backups',N'Database',name,N'Backup coverage',
+ CASE WHEN LastFull IS NULL THEN N'FAIL'
+      WHEN recovery_model_desc IN(N'FULL',N'BULK_LOGGED') AND is_read_only=0 AND LastLog IS NULL THEN N'FAIL'
+      WHEN LastFull<DATEADD(DAY,-@FullBackupMaxAgeDays,GETDATE()) THEN N'WARN'
+      WHEN recovery_model_desc IN(N'FULL',N'BULK_LOGGED') AND is_read_only=0 AND LastLog<DATEADD(HOUR,-@LogBackupMaxAgeHours,GETDATE()) THEN N'WARN'
+      ELSE N'PASS' END,
+ CASE WHEN LastFull IS NULL OR (recovery_model_desc IN(N'FULL',N'BULK_LOGGED') AND is_read_only=0 AND LastLog IS NULL) OR LastFull<DATEADD(DAY,-@FullBackupMaxAgeDays,GETDATE()) OR (recovery_model_desc IN(N'FULL',N'BULK_LOGGED') AND is_read_only=0 AND LastLog<DATEADD(HOUR,-@LogBackupMaxAgeHours,GETDATE())) THEN 1 ELSE 0 END,
+ N'LastFull='+COALESCE(CONVERT(nvarchar(19),LastFull,120),N'Never')+N'; LastLog='+COALESCE(CONVERT(nvarchar(19),LastLog,120),N'Never'),
+ N'Take current backups and retain restore-test evidence.',200
+FROM B;
+IF @UseRestoreEvidence=1 BEGIN ;WITH R AS(SELECT destination_database_name,MAX(restore_date) LastRestore FROM msdb.dbo.restorehistory GROUP BY destination_database_name) INSERT #C SELECT 'UPG-RST-'+RIGHT('0000'+CONVERT(varchar(4),d.database_id),4),N'Restore Evidence',N'Database',d.name,N'Local restore history',CASE WHEN r.LastRestore IS NULL THEN N'NOT CHECKED' WHEN r.LastRestore<DATEADD(DAY,-@RestoreEvidenceMaxAgeDays,GETDATE()) THEN N'WARN' ELSE N'PASS' END,CASE WHEN r.LastRestore IS NULL OR r.LastRestore<DATEADD(DAY,-@RestoreEvidenceMaxAgeDays,GETDATE()) THEN 1 ELSE 0 END,N'LastRestore='+COALESCE(CONVERT(nvarchar(19),r.LastRestore,120),N'No record'),N'Confirm controlled restore test and application validation.',210 FROM sys.databases d LEFT JOIN R r ON r.destination_database_name=d.name WHERE d.database_id>4; END;
+
+/* JOBS, LINKS, COMPONENTS */
+INSERT #C SELECT 'UPG-JOB-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY j.name)),4),N'Jobs',N'Job',j.name,N'Job owner',CASE WHEN sp.name IS NULL THEN N'FAIL' WHEN sp.is_disabled=1 THEN N'WARN' ELSE N'PASS' END,CASE WHEN sp.name IS NULL OR sp.is_disabled=1 THEN 1 ELSE 0 END,N'Owner='+COALESCE(sp.name,N'MISSING')+N'; Enabled='+CONVERT(nvarchar(10),j.enabled),N'Correct owner and validate job.',300 FROM msdb.dbo.sysjobs j LEFT JOIN sys.server_principals sp ON j.owner_sid=sp.sid;
+INSERT #C SELECT 'UPG-LINK-'+RIGHT('0000'+CONVERT(varchar(4),server_id),4),N'Connectivity',N'LinkedServer',name,N'Provider',CASE WHEN provider IS NULL OR provider LIKE N'%SQLOLEDB%' OR provider LIKE N'%SQLNCLI%' THEN N'FAIL' WHEN provider LIKE N'%MSDASQL%' THEN N'WARN' ELSE N'PASS' END,CASE WHEN provider IS NULL OR provider LIKE N'%SQLOLEDB%' OR provider LIKE N'%SQLNCLI%' OR provider LIKE N'%MSDASQL%' THEN 1 ELSE 0 END,N'Provider='+COALESCE(provider,N'(blank)')+N'; DataSource='+COALESCE(data_source,N'(blank)'),N'Install approved provider and test.',310 FROM sys.servers WHERE server_id>0 AND is_linked=1;
+INSERT #C VALUES('UPG-COMP-ENG',N'Components',N'Instance',@Instance,N'Database Engine',N'INFO',0,N'Detected.',N'Capture as evidence.',320); INSERT #I VALUES(N'Components',N'Component',N'Database Engine',N'Present',N'1',N'PRESENCE',1);
+IF FULLTEXTSERVICEPROPERTY('IsFullTextInstalled')=1 BEGIN INSERT #C VALUES('UPG-COMP-FT',N'Components',N'Instance',@Instance,N'Full-Text Search',N'INFO',1,N'Installed.',N'Install and validate on target.',321); INSERT #I VALUES(N'Components',N'Component',N'Full-Text Search',N'Present',N'1',N'PRESENCE',1); END;
+IF DB_ID(N'SSISDB') IS NOT NULL BEGIN INSERT #C VALUES('UPG-COMP-SSIS',N'Components',N'Instance',@Instance,N'SSISDB',N'INFO',1,N'Detected.',N'Validate SSIS service, catalogue and packages.',322); INSERT #I VALUES(N'Components',N'Component',N'SSISDB',N'Present',N'1',N'PRESENCE',1); END;
+IF EXISTS(SELECT 1 FROM sys.databases WHERE name LIKE N'ReportServer%') BEGIN INSERT #C VALUES('UPG-COMP-RS',N'Components',N'Instance',@Instance,N'ReportServer catalogue',N'INFO',1,N'Detected.',N'Confirm SSRS/PBIRS product and build.',323); INSERT #I VALUES(N'Components',N'Component',N'ReportServer catalogue',N'Present',N'1',N'PRESENCE',1); END;
+
+/* EDITION PARITY */
+DECLARE @EffectiveTargetEdition nvarchar(256)=CASE WHEN @TargetEdition=N'SAME' THEN UPPER(@Edition) ELSE @TargetEdition END;
+INSERT #C VALUES('UPG-ED-000',N'Edition Parity',N'Instance',@Instance,N'Target edition',N'INFO',CASE WHEN @TargetEdition=N'SAME' THEN 0 ELSE 1 END,N'Current='+COALESCE(@Edition,N'Unknown')+N'; Target='+@EffectiveTargetEdition,N'Validate exact target matrix.',350);
+IF @EffectiveTargetEdition LIKE N'%STANDARD%' OR @EffectiveTargetEdition=N'WEB' BEGIN IF @Hadr=1 INSERT #C VALUES('UPG-ED-AG',N'Edition Parity',N'Instance',@Instance,N'AG dependency',N'WARN',1,N'AG enabled.',N'Validate Basic AG and replica limits.',351); IF EXISTS(SELECT 1 FROM sys.dm_database_encryption_keys WHERE database_id>4 AND encryption_state<>1) INSERT #C VALUES('UPG-ED-TDE',N'Edition Parity',N'Instance',@Instance,N'TDE dependency',N'WARN',1,N'TDE detected.',N'Validate edition support.',352); IF EXISTS(SELECT 1 FROM sys.partitions WHERE data_compression>0) INSERT #C VALUES('UPG-ED-COMP',N'Edition Parity',N'Instance',@Instance,N'Compression dependency',N'WARN',1,N'Compression detected.',N'Validate edition support.',353); END;
+
+/* REPORTSERVER CONTENT */
+DECLARE @ReportDB sysname; DECLARE crs CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM sys.databases WHERE name LIKE N'ReportServer%' AND name NOT LIKE N'%TempDB' AND state_desc=N'ONLINE'; OPEN crs; FETCH NEXT FROM crs INTO @ReportDB;
+WHILE @@FETCH_STATUS=0 BEGIN SET @sql=N'USE '+QUOTENAME(@ReportDB)+N'; IF OBJECT_ID(N''dbo.Catalog'') IS NOT NULL BEGIN INSERT #I SELECT N''Reporting'',N''CatalogType'',CONVERT(nvarchar(20),Type),N''Count'',CONVERT(nvarchar(30),COUNT(*)),N''NUMERIC'',0 FROM dbo.Catalog GROUP BY Type; INSERT #C SELECT N''UPG-RS-''+RIGHT(N''00''+CONVERT(nvarchar(2),Type),2),N''Reporting'',N''Database'',DB_NAME(),N''Catalogue item type ''+CONVERT(nvarchar(20),Type),N''INFO'',0,N''Count=''+CONVERT(nvarchar(30),COUNT(*)),N''Retain as PRE/POST evidence.'',400 FROM dbo.Catalog GROUP BY Type; END; IF OBJECT_ID(N''dbo.Subscriptions'') IS NOT NULL INSERT #I SELECT N''Reporting'',N''Subscription'',CONVERT(nvarchar(512),SubscriptionID),N''Present'',N''1'',N''PRESENCE'',1 FROM dbo.Subscriptions;'; BEGIN TRY EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-RS-ERR',N'Reporting',N'Database',@ReportDB,N'Content inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect manually.',400); END CATCH; FETCH NEXT FROM crs INTO @ReportDB; END; CLOSE crs; DEALLOCATE crs;
+
+/* RESTORED PRE-UPGRADE CHECKS */
+
+/* DBCC CHECKDB evidence */
+IF OBJECT_ID('tempdb..#DBCCRaw') IS NOT NULL DROP TABLE #DBCCRaw;
+IF OBJECT_ID('tempdb..#DBCC') IS NOT NULL DROP TABLE #DBCC;
+CREATE TABLE #DBCCRaw(ParentObject nvarchar(255),ObjectName nvarchar(255),Field nvarchar(255),Value nvarchar(4000));
+CREATE TABLE #DBCC(DatabaseName sysname,LastKnownGood datetime);
+DECLARE cdbcc CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM sys.databases WHERE database_id>4 AND state_desc=N'ONLINE';
+OPEN cdbcc; FETCH NEXT FROM cdbcc INTO @db;
+WHILE @@FETCH_STATUS=0
+BEGIN
+ TRUNCATE TABLE #DBCCRaw;
+ SET @sql=N'DBCC DBINFO('''+REPLACE(@db,'''','''''')+N''') WITH TABLERESULTS, NO_INFOMSGS;';
+ BEGIN TRY
+  INSERT #DBCCRaw EXEC(@sql);
+  INSERT #DBCC SELECT @db,CASE WHEN ISDATE(Value)=1 THEN CONVERT(datetime,Value) END FROM #DBCCRaw WHERE Field=N'dbi_dbccLastKnownGood';
+ END TRY
+ BEGIN CATCH
+  INSERT #C VALUES('UPG-DBCC-ERR',N'Integrity',N'Database',@db,N'DBCC history scan',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Run DBCC CHECKDB and retain evidence.',520);
+ END CATCH;
+ FETCH NEXT FROM cdbcc INTO @db;
+END;
+CLOSE cdbcc; DEALLOCATE cdbcc;
+INSERT #C SELECT 'UPG-DBCC-'+RIGHT('0000'+CONVERT(varchar(4),d.database_id),4),N'Integrity',N'Database',d.name,N'DBCC CHECKDB last known good',CASE WHEN x.LastKnownGood IS NULL OR x.LastKnownGood<DATEADD(DAY,-@DBCCMaxAgeDays,GETDATE()) THEN N'WARN' ELSE N'PASS' END,CASE WHEN x.LastKnownGood IS NULL OR x.LastKnownGood<DATEADD(DAY,-@DBCCMaxAgeDays,GETDATE()) THEN 1 ELSE 0 END,N'LastKnownGood='+COALESCE(CONVERT(nvarchar(19),x.LastKnownGood,120),N'Unknown'),N'Run CHECKDB within threshold and retain output.',520 FROM sys.databases d LEFT JOIN #DBCC x ON d.name=x.DatabaseName WHERE d.database_id>4 AND d.state_desc=N'ONLINE';
+
+/* Startup procedures and server dependencies */
+INSERT #C SELECT 'UPG-START-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY o.name)),4),N'Server Dependencies',N'Procedure',QUOTENAME(sc.name)+N'.'+QUOTENAME(o.name),N'Startup stored procedure',N'WARN',1,N'Executes when SQL Server starts.',N'Disable for upgrade if it could block service start; script and test it.',540 FROM master.sys.objects o JOIN master.sys.schemas sc ON o.schema_id=sc.schema_id WHERE OBJECTPROPERTY(o.object_id,'ExecIsStartup')=1;
+INSERT #C SELECT 'UPG-CRED-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N'Server Dependencies',N'Credential',name,N'Credential',N'WARN',1,N'Identity='+COALESCE(credential_identity,N'Unknown'),N'Script securely and validate dependent proxies.',541 FROM sys.credentials;
+INSERT #C SELECT 'UPG-PROXY-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY p.name)),4),N'Server Dependencies',N'AgentProxy',p.name,N'Agent proxy',N'WARN',1,N'Credential='+COALESCE(c.name,N'MISSING'),N'Script proxy, credential, subsystem and principal mappings.',542 FROM msdb.dbo.sysproxies p LEFT JOIN sys.credentials c ON p.credential_id=c.credential_id;
+INSERT #C SELECT 'UPG-OPER-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N'Server Dependencies',N'Operator',name,N'Agent operator',N'INFO',1,N'Enabled='+CONVERT(nvarchar(10),enabled)+N'; Email='+COALESCE(email_address,N''),N'Script and validate notification routing.',543 FROM msdb.dbo.sysoperators;
+INSERT #C SELECT 'UPG-ALERT-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N'Server Dependencies',N'Alert',name,N'Agent alert',N'INFO',1,N'Enabled='+CONVERT(nvarchar(10),enabled),N'Script alert and operator mappings.',544 FROM msdb.dbo.sysalerts;
+BEGIN TRY INSERT #C SELECT 'UPG-MAIL-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N'Server Dependencies',N'DatabaseMailProfile',name,N'Database Mail profile',N'INFO',1,N'Profile exists.',N'Script accounts, profiles, principals and SMTP settings.',545 FROM msdb.dbo.sysmail_profile; END TRY BEGIN CATCH INSERT #C VALUES('UPG-MAIL-ERR',N'Server Dependencies',N'Instance',@Instance,N'Database Mail inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect Database Mail manually.',545); END CATCH;
+INSERT #C SELECT 'UPG-TRG-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N'Server Dependencies',N'ServerTrigger',name,N'Server trigger',N'WARN',1,N'Disabled='+CONVERT(nvarchar(10),is_disabled),N'Script and regression-test.',546 FROM sys.server_triggers WHERE is_ms_shipped=0;
+INSERT #C SELECT 'UPG-END-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N'Server Dependencies',N'Endpoint',name,N'Endpoint',N'WARN',1,N'Type='+type_desc+N'; State='+state_desc,N'Script permissions, certificates and ports.',547 FROM sys.endpoints WHERE is_admin_endpoint=0 AND name<>N'TSQL Default TCP';
+
+/* Database features, CLR and legacy code */
+IF OBJECT_ID('tempdb..#Hits') IS NOT NULL DROP TABLE #Hits;
+CREATE TABLE #Hits(SourceType nvarchar(32),DatabaseName sysname,SchemaName sysname,ObjectName sysname,ObjectType nvarchar(60),CheckName nvarchar(256),Severity nvarchar(20),Evidence nvarchar(max),SuggestedFix nvarchar(1000));
+DECLARE cscan CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM sys.databases WHERE database_id>4 AND state_desc=N'ONLINE';
+OPEN cscan; FETCH NEXT FROM cscan INTO @db;
+WHILE @@FETCH_STATUS=0
+BEGIN
+ SET @sql=N'USE '+QUOTENAME(@db)+N';
+ INSERT #C SELECT ''UPG-FEAT-''+RIGHT(''00000''+CONVERT(varchar(5),DB_ID()),5),N''Features'',N''Database'',DB_NAME(),N''Migration-sensitive features'',CASE WHEN is_cdc_enabled=1 OR is_published=1 OR is_subscribed=1 OR is_merge_published=1 OR is_broker_enabled=1 OR is_trustworthy_on=1 OR is_db_chaining_on=1 THEN N''WARN'' ELSE N''PASS'' END,CASE WHEN is_cdc_enabled=1 OR is_published=1 OR is_subscribed=1 OR is_merge_published=1 OR is_broker_enabled=1 OR is_trustworthy_on=1 OR is_db_chaining_on=1 THEN 1 ELSE 0 END,N''CDC=''+CONVERT(nvarchar(10),is_cdc_enabled)+N''; Published=''+CONVERT(nvarchar(10),is_published)+N''; Subscribed=''+CONVERT(nvarchar(10),is_subscribed)+N''; MergePublished=''+CONVERT(nvarchar(10),is_merge_published)+N''; Broker=''+CONVERT(nvarchar(10),is_broker_enabled)+N''; Trustworthy=''+CONVERT(nvarchar(10),is_trustworthy_on)+N''; Chaining=''+CONVERT(nvarchar(10),is_db_chaining_on),N''Document and test CDC, replication, Broker and security dependencies.'',560 FROM sys.databases WHERE database_id=DB_ID();
+ INSERT #C SELECT ''UPG-CT-''+RIGHT(''00000''+CONVERT(varchar(5),DB_ID()),5),N''Features'',N''Database'',DB_NAME(),N''Change Tracking'',N''WARN'',1,N''Retention=''+CONVERT(nvarchar(20),retention_period)+N'' ''+retention_period_units_desc,N''Validate consumers and synchronisation checkpoints.'',561 FROM sys.change_tracking_databases WHERE database_id=DB_ID();
+ INSERT #C SELECT ''UPG-CLR-''+RIGHT(''00000''+CONVERT(varchar(5),ROW_NUMBER() OVER(ORDER BY name)),5),N''CLR'',N''Assembly'',name,N''User CLR assembly'',CASE WHEN permission_set_desc=N''UNSAFE_ACCESS'' THEN N''FAIL'' ELSE N''WARN'' END,1,N''PermissionSet=''+permission_set_desc,N''Validate signing/trust and regression-test.'',562 FROM sys.assemblies WHERE is_user_defined=1;
+ INSERT #Hits SELECT N''Column'',DB_NAME(),sc.name,o.name,N''TABLE'',N''Legacy datatype: ''+t.name,N''WARN'',c.name+N'' (''+t.name+N'')'',N''Replace with max datatype after testing.'' FROM sys.columns c JOIN sys.objects o ON c.object_id=o.object_id JOIN sys.schemas sc ON o.schema_id=sc.schema_id JOIN sys.types t ON c.user_type_id=t.user_type_id WHERE o.is_ms_shipped=0 AND o.type=N''U'' AND t.name IN(N''text'',N''ntext'',N''image'');
+ INSERT #Hits SELECT N''Module'',DB_NAME(),sc.name,o.name,o.type_desc,N''Deprecated syntax'',N''WARN'',CASE WHEN m.definition LIKE N''%DBCC DBREINDEX%'' THEN N''DBCC DBREINDEX'' WHEN m.definition LIKE N''%DBCC INDEXDEFRAG%'' THEN N''DBCC INDEXDEFRAG'' WHEN m.definition LIKE N''%COMPUTE BY%'' THEN N''COMPUTE BY'' WHEN m.definition LIKE N''%sp_addtype%'' THEN N''sp_addtype'' WHEN m.definition LIKE N''%sp_bindrule%'' THEN N''sp_bindrule'' ELSE N''sp_bindefault'' END,N''Replace deprecated syntax and regression-test.'' FROM sys.sql_modules m JOIN sys.objects o ON m.object_id=o.object_id JOIN sys.schemas sc ON o.schema_id=sc.schema_id WHERE o.is_ms_shipped=0 AND (m.definition LIKE N''%DBCC DBREINDEX%'' OR m.definition LIKE N''%DBCC INDEXDEFRAG%'' OR m.definition LIKE N''%COMPUTE BY%'' OR m.definition LIKE N''%sp_addtype%'' OR m.definition LIKE N''%sp_bindrule%'' OR m.definition LIKE N''%sp_bindefault%'');';
+ BEGIN TRY EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-SCAN-ERR',N'Legacy Code',N'Database',@db,N'Feature and legacy scan',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect manually or use Migration Assessment.',560); END CATCH;
+ FETCH NEXT FROM cscan INTO @db;
+END;
+CLOSE cscan; DEALLOCATE cscan;
+INSERT #Hits SELECT N'JobStep',N'msdb',N'dbo',j.name,s.subsystem,N'ActiveScripting job step',N'FAIL',N'Step '+CONVERT(nvarchar(20),s.step_id)+N': '+s.step_name,N'Replace with a supported subsystem.' FROM msdb.dbo.sysjobs j JOIN msdb.dbo.sysjobsteps s ON j.job_id=s.job_id WHERE s.subsystem=N'ActiveScripting';
+INSERT #C SELECT 'UPG-LEG-'+RIGHT('00000'+CONVERT(varchar(5),ROW_NUMBER() OVER(ORDER BY Severity,DatabaseName,ObjectName,CheckName)),5),N'Legacy Code',SourceType,COALESCE(DatabaseName,N'')+CASE WHEN ObjectName IS NULL THEN N'' ELSE N':'+ObjectName END,CheckName,Severity,1,N'Evidence='+COALESCE(Evidence,N'')+N'; Schema='+COALESCE(SchemaName,N''),SuggestedFix,600 FROM #Hits;
+
+/* TDE and log shipping */
+BEGIN TRY INSERT #C SELECT 'UPG-TDE-'+RIGHT('0000'+CONVERT(varchar(4),d.database_id),4),N'Security',N'Database',d.name,N'TDE state',CASE WHEN k.encryption_state IN(2,4,5,6) THEN N'FAIL' ELSE N'WARN' END,1,N'EncryptionState='+CONVERT(nvarchar(20),k.encryption_state)+N'; Percent='+CONVERT(nvarchar(30),k.percent_complete),N'Back up and restore-test the certificate/private key.',570 FROM sys.databases d JOIN sys.dm_database_encryption_keys k ON d.database_id=k.database_id WHERE d.database_id>4; END TRY BEGIN CATCH INSERT #C VALUES('UPG-TDE-ERR',N'Security',N'Instance',@Instance,N'TDE inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Validate manually.',570); END CATCH;
+BEGIN TRY INSERT #C SELECT 'UPG-LSP-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY primary_database)),4),N'Features',N'Database',primary_database,N'Log shipping primary',N'WARN',1,N'BackupDirectory='+COALESCE(backup_directory,N''),N'Document topology, jobs, shares and monitor.',575 FROM msdb.dbo.log_shipping_primary_databases; INSERT #C SELECT 'UPG-LSS-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY secondary_database)),4),N'Features',N'Database',secondary_database,N'Log shipping secondary',N'WARN',1,N'RestoreDelay='+CONVERT(nvarchar(20),restore_delay),N'Document restore jobs and standby settings.',576 FROM msdb.dbo.log_shipping_secondary_databases; END TRY BEGIN CATCH INSERT #C VALUES('UPG-LS-ERR',N'Features',N'Instance',@Instance,N'Log shipping inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect manually.',575); END CATCH;
+
+/* Query Store and compatibility plan */
+IF @Major>=13
+BEGIN
+ DECLARE cqs CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM sys.databases WHERE database_id>4 AND state_desc=N'ONLINE';
+ OPEN cqs; FETCH NEXT FROM cqs INTO @db;
+ WHILE @@FETCH_STATUS=0
+ BEGIN
+  SET @sql=N'USE '+QUOTENAME(@db)+N'; INSERT #C SELECT ''UPG-QS-''+RIGHT(''00000''+CONVERT(varchar(5),DB_ID()),5),N''Query Store'',N''Database'',DB_NAME(),N''Query Store state'',CASE WHEN actual_state_desc=N''ERROR'' THEN N''FAIL'' WHEN actual_state_desc=N''READ_ONLY'' THEN N''WARN'' WHEN actual_state_desc=N''OFF'' THEN N''INFO'' ELSE N''PASS'' END,CASE WHEN actual_state_desc IN(N''ERROR'',N''READ_ONLY'',N''OFF'') THEN 1 ELSE 0 END,N''Desired=''+desired_state_desc+N''; Actual=''+actual_state_desc+N''; CurrentMB=''+CONVERT(nvarchar(30),current_storage_size_mb)+N''; MaxMB=''+CONVERT(nvarchar(30),max_storage_size_mb),N''Correct state and capture a baseline before compatibility changes.'',580 FROM sys.database_query_store_options;';
+  BEGIN TRY EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-QS-ERR',N'Query Store',N'Database',@db,N'Query Store inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect manually.',580); END CATCH;
+  FETCH NEXT FROM cqs INTO @db;
+ END;
+ CLOSE cqs; DEALLOCATE cqs;
+END;
+INSERT #C
+SELECT 'UPG-COMPAT-'+RIGHT('0000'+CONVERT(varchar(4),database_id),4),N'Compatibility',N'Database',name,N'Compatibility-level validation',
+ CASE WHEN compatibility_level<100 THEN N'FAIL'
+      WHEN @AssessmentPhase='POST' AND compatibility_level<@InstanceMaxCompat THEN N'WARN'
+      WHEN @AssessmentPhase='PRE' AND compatibility_level<@TargetCompat THEN N'INFO'
+      ELSE N'PASS' END,
+ CASE WHEN compatibility_level<100 OR (@AssessmentPhase='POST' AND compatibility_level<@InstanceMaxCompat) OR (@AssessmentPhase='PRE' AND compatibility_level<@TargetCompat) THEN 1 ELSE 0 END,
+ N'Current='+CONVERT(nvarchar(10),compatibility_level)+N'; RequiredMaximum='+CONVERT(nvarchar(10),CASE WHEN @AssessmentPhase='POST' THEN @InstanceMaxCompat ELSE @TargetCompat END)+N'; Phase='+@AssessmentPhase+N'; DatabaseClass='+CASE WHEN database_id=1 THEN N'MASTER' ELSE N'USER' END,
+ CASE WHEN @AssessmentPhase='POST' AND compatibility_level<@InstanceMaxCompat THEN N'Compatibility is below the maximum supported by the installed SQL Server instance and needs to be uplifted after Query Store baselining and regression testing.'
+      WHEN @AssessmentPhase='PRE' AND compatibility_level<@TargetCompat THEN N'Retain through the engine upgrade; baseline and regression-test before uplifting after the upgrade.'
+      ELSE N'No compatibility action is required.' END,610
+FROM sys.databases WHERE database_id=1 OR database_id>4;
+
+
+/* V5.1: SYSTEM DATABASE READINESS */
+INSERT #C
+SELECT 'UPG-SYSDB-'+RIGHT('00'+CONVERT(varchar(2),d.database_id),2),N'System Databases',N'Database',d.name,N'System database readiness',
+ CASE WHEN d.state_desc<>N'ONLINE' THEN N'FAIL'
+      WHEN d.database_id<>2 AND EXISTS(SELECT 1 FROM sys.master_files mf WHERE mf.database_id=d.database_id AND mf.growth=0) THEN N'FAIL'
+      WHEN EXISTS(SELECT 1 FROM sys.master_files mf WHERE mf.database_id=d.database_id AND (mf.growth=0 OR mf.is_percent_growth=1 OR (mf.growth>0 AND mf.growth/128.0<64))) THEN N'WARN'
+      ELSE N'PASS' END,
+ CASE WHEN d.state_desc<>N'ONLINE' OR EXISTS(SELECT 1 FROM sys.master_files mf WHERE mf.database_id=d.database_id AND (mf.growth=0 OR mf.is_percent_growth=1 OR (mf.growth>0 AND mf.growth/128.0<64))) THEN 1 ELSE 0 END,
+ N'State='+d.state_desc
+  +N'; GrowthDisabledFiles='+CONVERT(nvarchar(10),(SELECT COUNT(*) FROM sys.master_files mf WHERE mf.database_id=d.database_id AND mf.growth=0))
+  +N'; PercentGrowthFiles='+CONVERT(nvarchar(10),(SELECT COUNT(*) FROM sys.master_files mf WHERE mf.database_id=d.database_id AND mf.is_percent_growth=1)),
+ CASE WHEN d.database_id=2 THEN N'Confirm tempdb sizing and free space. Disabled autogrowth may be intentional but must be documented.' ELSE N'Ensure ONLINE state, autogrowth, fixed growth and sufficient volume space.' END,620
+FROM sys.databases d WHERE d.database_id BETWEEN 1 AND 4;
+
+/* V5.1: SQL SERVICES */
+IF @Major>=11 BEGIN BEGIN TRY SET @sql=N'INSERT #C SELECT ''UPG-SVC-''+RIGHT(''000''+CONVERT(varchar(3),ROW_NUMBER() OVER(ORDER BY servicename)),3),N''Services'',N''Service'',servicename,N''SQL service inventory'',CASE WHEN status_desc<>N''Running'' THEN N''WARN'' ELSE N''INFO'' END,CASE WHEN status_desc<>N''Running'' THEN 1 ELSE 0 END,N''Status=''+status_desc+N''; Startup=''+startup_type_desc+N''; Account=''+service_account+N''; File=''+COALESCE(filename,N''''),N''Retain for PRE/POST comparison.'',630 FROM sys.dm_server_services; INSERT #I SELECT N''Services'',N''Service'',servicename,N''Account'',service_account,N''EXACT'',1 FROM sys.dm_server_services;'; EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-SVC-ERR',N'Services',N'Instance',@Instance,N'Service inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Capture service accounts, startup types, binary paths and startup parameters manually.',630); END CATCH; END ELSE INSERT #C VALUES('UPG-SVC-MAN',N'Services',N'Instance',@Instance,N'Service inventory',N'MANUAL',1,N'Service DMV unavailable.',N'Capture service details manually.',630);
+
+/* V5.1: SQL AGENT READINESS */
+INSERT #C SELECT 'UPG-JOBFAIL-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY j.name)),4),N'Jobs',N'Job',j.name,N'Latest SQL Agent outcome failed',N'WARN',1,N'Latest outcome record failed.',N'Review history, dependencies, proxies, paths and credentials.',640 FROM msdb.dbo.sysjobs j JOIN msdb.dbo.sysjobhistory h ON j.job_id=h.job_id AND h.step_id=0 WHERE h.instance_id=(SELECT MAX(h2.instance_id) FROM msdb.dbo.sysjobhistory h2 WHERE h2.job_id=j.job_id AND h2.step_id=0) AND h.run_status=0;
+INSERT #C SELECT 'UPG-JOBSCH-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY j.name)),4),N'Jobs',N'Job',j.name,N'Enabled job without enabled schedule',N'WARN',1,N'No enabled attached schedule found.',N'Confirm whether the job is manual, alert-driven or misconfigured.',641 FROM msdb.dbo.sysjobs j WHERE j.enabled=1 AND NOT EXISTS(SELECT 1 FROM msdb.dbo.sysjobschedules js JOIN msdb.dbo.sysschedules sc ON js.schedule_id=sc.schedule_id WHERE js.job_id=j.job_id AND sc.enabled=1);
+BEGIN TRY INSERT #C SELECT 'UPG-MSX-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY server_name)),4),N'Jobs',N'Instance',server_name,N'MSX/TSX target server',N'WARN',1,N'Multiserver administration target detected.',N'Upgrade target servers before the master server.',642 FROM msdb.dbo.systargetservers; END TRY BEGIN CATCH INSERT #C VALUES('UPG-MSX-ERR',N'Jobs',N'Instance',@Instance,N'MSX/TSX inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect manually.',642); END CATCH;
+
+/* V5.1: SECURITY INVENTORY */
+INSERT #C SELECT 'UPG-LOGIN-'+RIGHT('00000'+CONVERT(varchar(5),ROW_NUMBER() OVER(ORDER BY name)),5),N'Security',N'Login',name,N'Server login inventory',CASE WHEN default_database_name IS NULL OR DB_ID(default_database_name) IS NULL THEN N'WARN' ELSE N'INFO' END,CASE WHEN default_database_name IS NULL OR DB_ID(default_database_name) IS NULL THEN 1 ELSE 0 END,N'Type='+type_desc+N'; Disabled='+CONVERT(nvarchar(10),is_disabled)+N'; DefaultDB='+COALESCE(default_database_name,N'Unknown')+N'; SID='+CONVERT(nvarchar(170),sid,1),N'Retain SID, role membership, default database and disabled state.',650 FROM sys.server_principals WHERE type IN('S','U','G') AND name NOT LIKE N'##%';
+INSERT #I SELECT N'Security',N'Login',name,N'SID',CONVERT(nvarchar(170),sid,1),N'EXACT',1 FROM sys.server_principals WHERE type IN('S','U','G') AND name NOT LIKE N'##%';
+INSERT #I SELECT N'Security',N'Login',name,N'Disabled',CONVERT(nvarchar(10),is_disabled),N'EXACT',1 FROM sys.server_principals WHERE type IN('S','U','G') AND name NOT LIKE N'##%';
+IF @Major>=11
+BEGIN
+ SET @sql=N'INSERT #I SELECT N''Security'',N''ServerRoleMembership'',r.name+N'':''+m.name,N''Present'',N''1'',N''PRESENCE'',1 FROM sys.server_role_members rm JOIN sys.server_principals r ON rm.role_principal_id=r.principal_id JOIN sys.server_principals m ON rm.member_principal_id=m.principal_id;';
+ EXEC(@sql);
+END
+ELSE
+BEGIN
+ INSERT #I SELECT N'Security',N'ServerRoleMembership',N'sysadmin:'+name,N'Present',N'1',N'PRESENCE',1 FROM master.dbo.syslogins WHERE sysadmin=1;
+ INSERT #C VALUES('UPG-ROLE-LEGACY',N'Security',N'Instance',@Instance,N'Legacy server-role inventory',N'INFO',0,N'SQL Server 2008 role membership captured from syslogins for sysadmin only.',N'Validate all fixed server-role memberships manually for migration.',650);
+END;
+DECLARE corph CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM sys.databases WHERE database_id>4 AND state_desc=N'ONLINE'; OPEN corph; FETCH NEXT FROM corph INTO @db;
+WHILE @@FETCH_STATUS=0
+BEGIN
+ IF @Major>=11
+  SET @sql=N'USE '+QUOTENAME(@db)+N'; INSERT #C SELECT ''UPG-ORPH-''+RIGHT(''00000''+CONVERT(varchar(5),ROW_NUMBER() OVER(ORDER BY dp.name)),5),N''Security'',N''DatabaseUser'',DB_NAME()+N'':''+dp.name,N''Orphaned database user'',N''WARN'',1,N''AuthenticationType=''+dp.authentication_type_desc,N''Map to the correct login while preserving SID.'',651 FROM sys.database_principals dp LEFT JOIN master.sys.server_principals sp ON dp.sid=sp.sid WHERE dp.principal_id>4 AND dp.type IN(''S'',''U'',''G'') AND dp.authentication_type=1 AND sp.sid IS NULL AND dp.name NOT IN(N''dbo'',N''guest'',N''INFORMATION_SCHEMA'',N''sys'');';
+ ELSE
+  SET @sql=N'USE '+QUOTENAME(@db)+N'; INSERT #C SELECT ''UPG-ORPH-''+RIGHT(''00000''+CONVERT(varchar(5),ROW_NUMBER() OVER(ORDER BY dp.name)),5),N''Security'',N''DatabaseUser'',DB_NAME()+N'':''+dp.name,N''Orphaned database user'',N''WARN'',1,N''Legacy SID comparison'',N''Map to the correct login while preserving SID.'',651 FROM sys.database_principals dp LEFT JOIN master.sys.server_principals sp ON dp.sid=sp.sid WHERE dp.principal_id>4 AND dp.type IN(''S'',''U'',''G'') AND sp.sid IS NULL AND dp.name NOT IN(N''dbo'',N''guest'',N''INFORMATION_SCHEMA'',N''sys'');';
+ BEGIN TRY EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-ORPH-ERR',N'Security',N'Database',@db,N'Orphaned-user scan',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect mappings manually.',651); END CATCH;
+ FETCH NEXT FROM corph INTO @db;
+END;
+CLOSE corph; DEALLOCATE corph;
+
+/* V5.1: VLF ANALYSIS */
+DECLARE cvlf CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM sys.databases WHERE database_id>4 AND state_desc=N'ONLINE'; OPEN cvlf; FETCH NEXT FROM cvlf INTO @db;
+WHILE @@FETCH_STATUS=0 BEGIN BEGIN TRY IF @Major>=14 BEGIN SET @sql=N'INSERT #VLF SELECT N'''+REPLACE(@db,'''','''''')+N''',COUNT(*),N''sys.dm_db_log_info'' FROM sys.dm_db_log_info(DB_ID(N'''+REPLACE(@db,'''','''''')+N'''));'; EXEC(@sql); END ELSE IF @Major>=11 BEGIN TRUNCATE TABLE #LI12; SET @sql=N'USE '+QUOTENAME(@db)+N'; DBCC LOGINFO WITH NO_INFOMSGS;'; INSERT #LI12 EXEC(@sql); INSERT #VLF SELECT @db,COUNT(*),N'DBCC LOGINFO RecoveryUnitId' FROM #LI12; END ELSE BEGIN TRUNCATE TABLE #LI08; SET @sql=N'USE '+QUOTENAME(@db)+N'; DBCC LOGINFO WITH NO_INFOMSGS;'; INSERT #LI08 EXEC(@sql); INSERT #VLF SELECT @db,COUNT(*),N'DBCC LOGINFO' FROM #LI08; END; END TRY BEGIN CATCH INSERT #C VALUES('UPG-VLF-ERR',N'Storage',N'Database',@db,N'VLF scan',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Run version-appropriate inventory manually.',660); END CATCH; FETCH NEXT FROM cvlf INTO @db; END; CLOSE cvlf; DEALLOCATE cvlf;
+INSERT #C SELECT 'UPG-VLF-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY DatabaseName)),4),N'Storage',N'Database',DatabaseName,N'Log VLF count',CASE WHEN VLFCount>=@VLFFailCount THEN N'FAIL' WHEN VLFCount>=@VLFWarnCount THEN N'WARN' ELSE N'PASS' END,CASE WHEN VLFCount>=@VLFWarnCount THEN 1 ELSE 0 END,N'VLFCount='+CONVERT(nvarchar(20),VLFCount)+N'; Method='+MethodUsed,N'Correct growth and reduce excessive VLFs.',660 FROM #VLF;
+
+/* V5.2.1: AG DATABASE HEALTH */
+IF @Hadr=1 AND @Major>=11
+BEGIN
+ BEGIN TRY
+  SET @sql=N'
+  INSERT #C
+  SELECT
+   N''UPG-HADR-''+RIGHT(N''00000''+CONVERT(nvarchar(5),ROW_NUMBER() OVER(ORDER BY ag.name,ar.replica_server_name,DB_NAME(drs.database_id))),5),
+   N''HADR'',N''Database'',DB_NAME(drs.database_id),N''AG database health'',
+   CASE
+    WHEN drs.is_suspended=1 THEN N''FAIL''
+    WHEN drs.database_state IS NOT NULL AND drs.database_state<>0 THEN N''FAIL''
+    WHEN ar.availability_mode_desc=N''SYNCHRONOUS_COMMIT''
+     AND ISNULL(drs.synchronization_state_desc,N''UNKNOWN'')<>N''SYNCHRONIZED'' THEN N''FAIL''
+    WHEN drs.synchronization_health_desc=N''NOT_HEALTHY'' THEN N''FAIL''
+    WHEN ar.availability_mode_desc=N''ASYNCHRONOUS_COMMIT''
+     AND ISNULL(drs.synchronization_state_desc,N''UNKNOWN'') NOT IN(N''SYNCHRONIZED'',N''SYNCHRONIZING'') THEN N''WARN''
+    WHEN drs.synchronization_health_desc=N''PARTIALLY_HEALTHY'' THEN N''WARN''
+    ELSE N''PASS''
+   END,
+   CASE
+    WHEN drs.is_suspended=1 THEN 1
+    WHEN drs.database_state IS NOT NULL AND drs.database_state<>0 THEN 1
+    WHEN ar.availability_mode_desc=N''SYNCHRONOUS_COMMIT''
+     AND ISNULL(drs.synchronization_state_desc,N''UNKNOWN'')<>N''SYNCHRONIZED'' THEN 1
+    WHEN drs.synchronization_health_desc IN(N''NOT_HEALTHY'',N''PARTIALLY_HEALTHY'') THEN 1
+    WHEN ar.availability_mode_desc=N''ASYNCHRONOUS_COMMIT''
+     AND ISNULL(drs.synchronization_state_desc,N''UNKNOWN'') NOT IN(N''SYNCHRONIZED'',N''SYNCHRONIZING'') THEN 1
+    ELSE 0
+   END,
+   N''AG=''+ag.name
+    +N''; Replica=''+ar.replica_server_name
+    +N''; Mode=''+ar.availability_mode_desc
+    +N''; Failover=''+ar.failover_mode_desc
+    +N''; Sync=''+COALESCE(drs.synchronization_state_desc,N''Unknown'')
+    +N''; SyncHealth=''+COALESCE(drs.synchronization_health_desc,N''Unknown'')
+    +N''; DBState=''+COALESCE(drs.database_state_desc,N''Unknown'')
+    +N''; Suspended=''+CONVERT(nvarchar(10),drs.is_suspended),
+   N''Correct suspended data movement, unhealthy synchronisation, known non-online database state or replica health issues before upgrade.'',670
+  FROM sys.dm_hadr_database_replica_states drs
+  JOIN sys.availability_replicas ar
+   ON drs.group_id=ar.group_id AND drs.replica_id=ar.replica_id
+  JOIN sys.availability_groups ag
+   ON drs.group_id=ag.group_id;';
+  EXEC sys.sp_executesql @sql;
+ END TRY
+ BEGIN CATCH
+  INSERT #C VALUES('UPG-HADR-ERR',N'HADR',N'Instance',@Instance,N'Always On health',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Validate replica synchronisation, suspension, health and database state manually.',670);
+ END CATCH;
+END;
+
+/* V5.2.1: RESTORE VERIFICATION EVIDENCE */
+IF @RequireRestoreVerifyEvidence=1 INSERT #C VALUES('UPG-RST-MAN',N'Restore Evidence',N'Instance',@Instance,N'Backup verification and restore-test evidence',N'MANUAL',1,N'Backup history alone does not prove readable media or successful application recovery.',N'Retain RESTORE VERIFYONLY and controlled restore/application validation evidence.',680);
+
+
+/* V5.1 FINAL HARDENING */
+/* Permissions */
+INSERT #C VALUES('UPG-PERM-001',N'Permissions',N'Instance',@Instance,N'VIEW SERVER STATE',CASE WHEN HAS_PERMS_BY_NAME(NULL,NULL,'VIEW SERVER STATE')=1 OR IS_SRVROLEMEMBER('sysadmin')=1 THEN N'PASS' ELSE N'NOT CHECKED' END,CASE WHEN HAS_PERMS_BY_NAME(NULL,NULL,'VIEW SERVER STATE')=1 OR IS_SRVROLEMEMBER('sysadmin')=1 THEN 0 ELSE 1 END,N'Permission checked.',N'Run with approved visibility or treat DMV checks as incomplete.',75);
+INSERT #C VALUES('UPG-PERM-002',N'Permissions',N'Instance',@Instance,N'VIEW ANY DEFINITION',CASE WHEN HAS_PERMS_BY_NAME(NULL,NULL,'VIEW ANY DEFINITION')=1 OR IS_SRVROLEMEMBER('sysadmin')=1 THEN N'PASS' ELSE N'NOT CHECKED' END,CASE WHEN HAS_PERMS_BY_NAME(NULL,NULL,'VIEW ANY DEFINITION')=1 OR IS_SRVROLEMEMBER('sysadmin')=1 THEN 0 ELSE 1 END,N'Permission checked.',N'Run with approved visibility or treat object scans as incomplete.',76);
+
+/* SQL Server 2025 blockers */
+IF @TargetMajorVersion=17
+BEGIN
+ IF @Edition LIKE N'%Web%' INSERT #C VALUES('UPG-2025-WEB',N'SQL 2025',N'Instance',@Instance,N'Web edition target path',N'FAIL',1,N'Web edition is discontinued in SQL Server 2025.',N'Select and license a supported target edition.',80);
+ IF DB_ID(N'DQS_MAIN') IS NOT NULL OR DB_ID(N'DQS_PROJECTS') IS NOT NULL OR DB_ID(N'DQS_STAGING_DATA') IS NOT NULL INSERT #C VALUES('UPG-2025-DQS',N'SQL 2025',N'Instance',@Instance,N'DQS dependency',N'FAIL',1,N'DQS database detected; DQS is removed in SQL Server 2025.',N'Migrate or remove the DQS dependency.',81);
+ IF EXISTS(SELECT 1 FROM sys.databases WHERE name LIKE N'MDS%') INSERT #C VALUES('UPG-2025-MDS',N'SQL 2025',N'Instance',@Instance,N'MDS dependency',N'FAIL',1,N'MDS-named database detected; MDS is removed in SQL Server 2025.',N'Confirm and migrate the MDS dependency.',82);
+ INSERT #C VALUES('UPG-2025-KNOWN',N'SQL 2025',N'Instance',@Instance,N'Current known-issues review',N'MANUAL',1,N'OS, TLS, architecture and prerequisite checks require server-level validation.',N'Review current SQL Server 2025 release notes and known issues before approval.',83);
+END;
+
+/* Suspect pages */
+INSERT #C SELECT 'UPG-SUSPECT-'+RIGHT('00000'+CONVERT(varchar(5),ROW_NUMBER() OVER(ORDER BY database_id,file_id,page_id)),5),N'Integrity',N'Page',DB_NAME(database_id)+N':'+CONVERT(nvarchar(20),file_id)+N':'+CONVERT(nvarchar(30),page_id),N'Suspect page history',CASE WHEN event_type IN(1,2,3) THEN N'FAIL' ELSE N'WARN' END,1,N'EventType='+CONVERT(nvarchar(10),event_type)+N'; ErrorCount='+CONVERT(nvarchar(20),error_count)+N'; LastUpdate='+CONVERT(nvarchar(19),last_update_date,120),N'Investigate I/O health, CHECKDB and restore requirements.',510 FROM msdb.dbo.suspect_pages;
+
+/* Optional SQL error log */
+IF @IncludeErrorLogScan=1 BEGIN BEGIN TRY IF OBJECT_ID('tempdb..#ErrorLog') IS NOT NULL DROP TABLE #ErrorLog; CREATE TABLE #ErrorLog(LogDate datetime,ProcessInfo nvarchar(50),LogText nvarchar(max)); INSERT #ErrorLog EXEC master.dbo.xp_readerrorlog 0,1; INSERT #C SELECT 'UPG-ERRLOG-'+RIGHT('00000'+CONVERT(varchar(5),ROW_NUMBER() OVER(ORDER BY LogDate)),5),N'Error Log',N'Instance',@Instance,N'Critical error-log entry',CASE WHEN LogText LIKE N'%823%' OR LogText LIKE N'%824%' OR LogText LIKE N'%825%' OR LogText LIKE N'%corrupt%' THEN N'FAIL' ELSE N'WARN' END,1,N'LogDate='+CONVERT(nvarchar(19),LogDate,120)+N'; '+LEFT(LogText,1500),N'Investigate and resolve before upgrade.',511 FROM #ErrorLog WHERE LogText LIKE N'%Error: 823%' OR LogText LIKE N'%Error: 824%' OR LogText LIKE N'%Error: 825%' OR LogText LIKE N'%stack dump%' OR LogText LIKE N'%I/O requests taking longer%' OR LogText LIKE N'%corrupt%' OR LogText LIKE N'%assertion%'; END TRY BEGIN CATCH INSERT #C VALUES('UPG-ERRLOG-ERR',N'Error Log',N'Instance',@Instance,N'Error-log scan',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Review manually.',511); END CATCH; END;
+
+/* Full-Text, FILESTREAM, In-Memory OLTP and encryption */
+DECLARE cfinal CURSOR LOCAL FAST_FORWARD FOR SELECT name FROM sys.databases WHERE database_id>4 AND state_desc=N'ONLINE'; OPEN cfinal; FETCH NEXT FROM cfinal INTO @db;
+WHILE @@FETCH_STATUS=0
+BEGIN
+ SET @sql=N'USE '+QUOTENAME(@db)+N'; INSERT #C SELECT ''UPG-FT-''+RIGHT(''0000''+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N''Full-Text'',N''Catalog'',DB_NAME()+N'':''+name,N''Full-Text catalogue'',N''INFO'',0,N''Indexes=''+CONVERT(nvarchar(20),(SELECT COUNT(*) FROM sys.fulltext_indexes)),N''Ensure Full-Text is installed and validate behaviour.'',690 FROM sys.fulltext_catalogs; INSERT #C SELECT ''UPG-CERT-''+RIGHT(''0000''+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N''Security'',N''Certificate'',DB_NAME()+N'':''+name,N''Database certificate'',CASE WHEN expiry_date<DATEADD(DAY,90,GETDATE()) THEN N''WARN'' ELSE N''INFO'' END,CASE WHEN expiry_date<DATEADD(DAY,90,GETDATE()) THEN 1 ELSE 0 END,N''Expiry=''+COALESCE(CONVERT(nvarchar(19),expiry_date,120),N''None''),N''Back up and validate keys, certificates and expiry.'',692 FROM sys.certificates WHERE name<>N''##MS_DatabaseMasterKey##'';';
+ BEGIN TRY EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-ADV-ERR',N'Advanced Features',N'Database',@db,N'Advanced feature scan',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect manually.',690); END CATCH;
+ IF @Major>=11
+ BEGIN
+  SET @sql=N'USE '+QUOTENAME(@db)+N'; INSERT #C SELECT ''UPG-FILETABLE-''+RIGHT(''0000''+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N''FILESTREAM'',N''Table'',DB_NAME()+N'':''+name,N''FileTable dependency'',N''WARN'',1,N''FileTable detected.'',N''Validate FILESTREAM and FileTable configuration.'',691 FROM sys.tables WHERE is_filetable=1;';
+  BEGIN TRY EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-FILETABLE-ERR',N'FILESTREAM',N'Database',@db,N'FileTable inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect manually.',691); END CATCH;
+ END;
+ IF @Major>=12 BEGIN SET @sql=N'USE '+QUOTENAME(@db)+N'; INSERT #C SELECT ''UPG-MO-''+RIGHT(''0000''+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N''In-Memory OLTP'',N''Table'',DB_NAME()+N'':''+name,N''Memory-optimised table'',N''WARN'',1,N''Durability=''+durability_desc,N''Validate filegroups, capacity and application behaviour.'',693 FROM sys.tables WHERE is_memory_optimized=1;'; BEGIN TRY EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-MO-ERR',N'In-Memory OLTP',N'Database',@db,N'In-Memory inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect manually.',693); END CATCH; END;
+ FETCH NEXT FROM cfinal INTO @db;
+END; CLOSE cfinal; DEALLOCATE cfinal;
+
+/* Replication, AG listeners, maintenance and backup devices */
+IF DB_ID(N'distribution') IS NOT NULL
+BEGIN
+ BEGIN TRY
+  SET @sql=N'IF OBJECT_ID(N''distribution.dbo.MSpublications'') IS NOT NULL
+  INSERT #C
+  SELECT N''UPG-REPL-''+RIGHT(N''0000''+CONVERT(nvarchar(4),ROW_NUMBER() OVER(ORDER BY publisher_db,publication)),4),N''Replication'',N''Publication'',publisher_db+N'':''+publication,N''Replication publication'',N''WARN'',1,N''Publication detected.'',N''Document distributor, publisher, subscribers, agents and upgrade sequence.'',710
+  FROM distribution.dbo.MSpublications;';
+  EXEC(@sql);
+ END TRY
+ BEGIN CATCH
+  INSERT #C VALUES('UPG-REPL-ERR',N'Replication',N'Instance',@Instance,N'Replication topology',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inventory topology manually.',710);
+ END CATCH;
+END
+ELSE IF EXISTS(SELECT 1 FROM sys.databases WHERE is_published=1 OR is_merge_published=1 OR is_subscribed=1)
+ INSERT #C VALUES('UPG-REPL-REMOTE',N'Replication',N'Instance',@Instance,N'Replication topology',N'MANUAL',1,N'Replication flags are present but no local distribution database exists.',N'Identify the remote Distributor and document Publisher, Subscriber, agent and upgrade sequence.',710);
+IF @Hadr=1 AND @Major>=11 BEGIN BEGIN TRY SET @sql=N'INSERT #C SELECT ''UPG-AGLIST-''+RIGHT(''000''+CONVERT(varchar(3),ROW_NUMBER() OVER(ORDER BY ag.name,l.dns_name)),3),N''HADR'',N''Listener'',COALESCE(l.dns_name,N''No listener''),N''AG listener'',CASE WHEN l.listener_id IS NULL THEN N''WARN'' ELSE N''INFO'' END,CASE WHEN l.listener_id IS NULL THEN 1 ELSE 0 END,N''AG=''+ag.name+N''; Port=''+COALESCE(CONVERT(nvarchar(20),l.port),N''None''),N''Validate listener DNS, IP, port and connectivity.'',720 FROM sys.availability_groups ag LEFT JOIN sys.availability_group_listeners l ON ag.group_id=l.group_id;'; EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-AGLIST-ERR',N'HADR',N'Instance',@Instance,N'AG listener inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Validate manually.',720); END CATCH; END;
+IF OBJECT_ID(N'msdb.dbo.sysmaintplan_plans') IS NOT NULL
+BEGIN
+ BEGIN TRY
+  SET @sql=N'INSERT #C
+  SELECT N''UPG-MPLAN-''+RIGHT(N''0000''+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),
+   N''Maintenance'',N''MaintenancePlan'',name,N''Maintenance plan'',N''INFO'',0,
+   N''Plan present.'',N''Back up msdb and validate related jobs.'',730
+  FROM msdb.dbo.sysmaintplan_plans;';
+  EXEC sys.sp_executesql @sql;
+ END TRY
+ BEGIN CATCH
+  INSERT #C VALUES('UPG-MPLAN-ERR',N'Maintenance',N'Instance',@Instance,N'Maintenance-plan inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Inspect manually.',730);
+ END CATCH;
+END
+ELSE
+BEGIN
+ INSERT #C VALUES('UPG-MPLAN-NA',N'Maintenance',N'Instance',@Instance,N'Maintenance-plan inventory',N'INFO',0,
+  N'Maintenance-plan metadata not present.',N'No maintenance plans detected.',730);
+END;
+BEGIN TRY INSERT #C SELECT 'UPG-BDEV-'+RIGHT('0000'+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY name)),4),N'Backups',N'BackupDevice',name,N'Backup device',N'INFO',0,N'PhysicalName='+COALESCE(physical_name,N''),N'Script and validate paths.',731 FROM sys.backup_devices; END TRY BEGIN CATCH END CATCH;
+
+/* SSISDB deep inventory */
+IF DB_ID(N'SSISDB') IS NOT NULL BEGIN BEGIN TRY SET @sql=N'USE SSISDB; INSERT #C SELECT ''UPG-SSIS-PROJ-''+RIGHT(''0000''+CONVERT(varchar(4),ROW_NUMBER() OVER(ORDER BY f.name,p.name)),4),N''SSISDB'',N''Project'',f.name+N''/''+p.name,N''SSIS project'',N''INFO'',0,N''Packages=''+CONVERT(nvarchar(20),(SELECT COUNT(*) FROM catalog.packages x WHERE x.project_id=p.project_id)),N''Back up SSISDB and key; validate packages, environments and references.'',740 FROM catalog.projects p JOIN catalog.folders f ON p.folder_id=f.folder_id;'; EXEC(@sql); END TRY BEGIN CATCH INSERT #C VALUES('UPG-SSIS-ERR',N'SSISDB',N'Database',N'SSISDB',N'SSISDB inventory',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Validate SSISDB manually.',740); END CATCH; END;
+
+
+/* COLLATION CHECKS */
+INSERT #C VALUES
+('UPG-COLL-001',N'Collation',N'Instance',@Instance,N'Instance collation',N'INFO',0,
+ N'Collation='+CONVERT(nvarchar(128),SERVERPROPERTY('Collation')),
+ N'Retain for migration validation.',615);
+
+IF (SELECT COUNT(DISTINCT collation_name) FROM sys.databases WHERE database_id>4 AND collation_name IS NOT NULL)>1
+BEGIN
+ INSERT #C VALUES
+ ('UPG-COLL-002',N'Collation',N'Instance',@Instance,N'Multiple database collations detected',N'WARN',1,
+  N'Multiple database collations exist on this instance.',
+  N'Validate cross-database joins, temp-table usage and application assumptions.',616);
+END;
+
+INSERT #C
+SELECT 'UPG-COLL-'+RIGHT('0000'+CONVERT(varchar(4),database_id),4),
+ N'Collation',N'Database',name,N'Database collation differs from instance',N'WARN',1,
+ N'Database='+collation_name+N'; Instance='+CONVERT(nvarchar(128),SERVERPROPERTY('Collation')),
+ N'Validate temp-table usage because tempdb inherits the instance collation; also validate cross-database joins and application assumptions.',617
+FROM sys.databases
+WHERE database_id>4
+AND collation_name IS NOT NULL
+AND collation_name<>CONVERT(nvarchar(128),SERVERPROPERTY('Collation'));
+
+/* NORMALISED INVENTORY */
+INSERT #I VALUES(N'Instance',N'Instance',@Instance,N'Collation',CONVERT(nvarchar(128),SERVERPROPERTY('Collation')),N'EXACT',1);
+INSERT #I SELECT N'Database',N'Database',name,N'Collation',COALESCE(collation_name,N''),N'EXACT',1 FROM sys.databases;
+INSERT #I VALUES(N'Instance',N'Instance',@Instance,N'ProductVersion',COALESCE(@Version,N''),N'EXPECTED_CHANGE',0);
+INSERT #I VALUES(N'Instance',N'Instance',@Instance,N'Edition',COALESCE(@Edition,N''),N'EXACT',1);
+INSERT #I SELECT N'Configuration',N'Configuration',name,N'ValueInUse',CONVERT(nvarchar(128),value_in_use),N'EXACT',1 FROM sys.configurations WHERE name IN(N'max server memory (MB)',N'min server memory (MB)',N'max degree of parallelism',N'cost threshold for parallelism',N'optimize for ad hoc workloads',N'backup compression default');
+INSERT #I SELECT N'Database',N'Database',name,N'Present',N'1',N'PRESENCE',1 FROM sys.databases WHERE database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'State',state_desc,N'EXACT',1 FROM sys.databases WHERE database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'Compatibility',CONVERT(nvarchar(10),compatibility_level),N'EXPECTED_CHANGE',0 FROM sys.databases WHERE database_id>4;
+INSERT #I SELECT N'Jobs',N'Job',name,N'Present',N'1',N'PRESENCE',1 FROM msdb.dbo.sysjobs;
+INSERT #I SELECT N'Jobs',N'Job',name,N'Enabled',CONVERT(nvarchar(10),enabled),N'EXACT',1 FROM msdb.dbo.sysjobs;
+INSERT #I SELECT N'Connectivity',N'LinkedServer',name,N'Provider',COALESCE(provider,N''),N'EXACT',1 FROM sys.servers WHERE server_id>0 AND is_linked=1;
+INSERT #I SELECT N'Server Dependencies',N'Credential',name,N'Present',N'1',N'PRESENCE',1 FROM sys.credentials;
+INSERT #I SELECT N'Server Dependencies',N'AgentProxy',name,N'Present',N'1',N'PRESENCE',1 FROM msdb.dbo.sysproxies;
+
+/* V6.2.4 EXPANDED DRIFT INVENTORY */
+DELETE #I WHERE Category=N'Database' AND PropertyName IN(N'Collation',N'Present',N'State',N'Compatibility');
+INSERT #I SELECT N'Database',N'Database',name,N'Present',N'1',N'PRESENCE',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'State',state_desc,N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'Compatibility',CONVERT(nvarchar(10),compatibility_level),N'COMPATIBILITY',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'Collation',COALESCE(collation_name,N''),N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'RecoveryModel',recovery_model_desc,N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'Owner',COALESCE(SUSER_SNAME(owner_sid),N'(unresolved)'),N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'PageVerify',page_verify_option_desc,N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'ReadOnly',CONVERT(nvarchar(10),is_read_only),N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'AutoClose',CONVERT(nvarchar(10),is_auto_close_on),N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'AutoShrink',CONVERT(nvarchar(10),is_auto_shrink_on),N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'Trustworthy',CONVERT(nvarchar(10),is_trustworthy_on),N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database',N'Database',name,N'BrokerEnabled',CONVERT(nvarchar(10),is_broker_enabled),N'EXACT',1 FROM sys.databases WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database Files',N'File',DB_NAME(database_id)+N':'+name,N'PhysicalPath',physical_name,N'EXACT',1 FROM sys.master_files WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database Files',N'File',DB_NAME(database_id)+N':'+name,N'SizeMB',CONVERT(nvarchar(30),CONVERT(decimal(18,2),size*8.0/1024.0)),N'NUMERIC',0 FROM sys.master_files WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database Files',N'File',DB_NAME(database_id)+N':'+name,N'GrowthType',CASE WHEN is_percent_growth=1 THEN N'PERCENT' ELSE N'FIXED_MB' END,N'EXACT',1 FROM sys.master_files WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Database Files',N'File',DB_NAME(database_id)+N':'+name,N'GrowthValue',CASE WHEN is_percent_growth=1 THEN CONVERT(nvarchar(30),growth) ELSE CONVERT(nvarchar(30),CONVERT(decimal(18,2),growth*8.0/1024.0)) END,N'EXACT',1 FROM sys.master_files WHERE database_id=1 OR database_id>4;
+INSERT #I SELECT N'Jobs',N'Job',name,N'Owner',COALESCE(SUSER_SNAME(owner_sid),N'(unresolved)'),N'EXACT',1 FROM msdb.dbo.sysjobs;
+INSERT #I SELECT N'Connectivity',N'LinkedServer',name,N'DataSource',COALESCE(data_source,N''),N'EXACT',1 FROM sys.servers WHERE server_id>0 AND is_linked=1;
+INSERT #I SELECT N'Security',N'Login',name,N'DefaultDatabase',COALESCE(default_database_name,N''),N'EXACT',1 FROM sys.server_principals WHERE type IN('S','U','G') AND name NOT LIKE N'##%';
+IF @Major>=11 BEGIN TRY SET @sql=N'INSERT #I SELECT N''Services'',N''Service'',servicename,N''StartupType'',startup_type_desc,N''EXACT'',1 FROM sys.dm_server_services; INSERT #I SELECT N''Services'',N''Service'',servicename,N''Status'',status_desc,N''EXACT'',1 FROM sys.dm_server_services;'; EXEC(@sql); END TRY BEGIN CATCH END CATCH;
+/* V7.0 DEDICATED COMPATIBILITY EVIDENCE */
+INSERT #CompatibilityFact(DatabaseName,CompatibilityLevel,InstanceMaxCompatibility,DatabaseClass)
+SELECT name,compatibility_level,@InstanceMaxCompat,CASE WHEN database_id=1 THEN 'MASTER' ELSE 'USER' END
+FROM sys.databases
+WHERE database_id=1 OR database_id>4;
+
+/* LOCAL REPOSITORY */
+IF @RepositoryMode='SAVE'
+BEGIN
+ BEGIN TRY
+  IF DB_ID(@RepositoryDatabase) IS NULL AND @RepositoryCreateMode='CREATE_DATABASE'
+  BEGIN
+   SET @sql=N'CREATE DATABASE '+QUOTENAME(@RepositoryDatabase)+N';'; EXEC(@sql);
+  END;
+  IF DB_ID(@RepositoryDatabase) IS NULL
+  BEGIN
+   INSERT #C (CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix,SortOrder)
+   VALUES('UPG-REP-NODB',N'Repository',N'Instance',@Instance,N'Repository database',N'NOT CHECKED',1,N'Repository database does not exist.',N'Create or select the approved repository database.',900);
+  END
+  ELSE
+  BEGIN
+   SET @QuotedRepositorySchema=QUOTENAME(@RepositorySchema);
+   /* Schema name is fully materialised before nested execution. */
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; IF SCHEMA_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N''') IS NULL EXEC(N''CREATE SCHEMA '+REPLACE(@QuotedRepositorySchema,'''','''''')+N' AUTHORIZATION dbo;'');';
+   EXEC(@sql);
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N';
+IF OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.AssessmentRun'',N''U'') IS NULL CREATE TABLE '+@QuotedRepositorySchema+N'.AssessmentRun(RunId uniqueidentifier NOT NULL PRIMARY KEY,ProjectName nvarchar(128),AssessmentPhase varchar(10),ExecutedInstance nvarchar(256),ProductVersion nvarchar(128),Edition nvarchar(256),AssessmentTime datetime2(0),OverallRAG varchar(10));
+IF OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.InventoryFact'',N''U'') IS NULL CREATE TABLE '+@QuotedRepositorySchema+N'.InventoryFact(RunId uniqueidentifier NOT NULL,Category nvarchar(64),ObjectType nvarchar(64),ObjectName nvarchar(512),PropertyName nvarchar(128),PropertyValue nvarchar(max),ComparePolicy varchar(20),IsCritical bit);
+IF OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.AssessmentFinding'',N''U'') IS NULL CREATE TABLE '+@QuotedRepositorySchema+N'.AssessmentFinding(RunId uniqueidentifier NOT NULL,CheckCode varchar(40),CheckGroup nvarchar(64),ScopeType nvarchar(32),ScopeName nvarchar(256),CheckName nvarchar(256),Status nvarchar(20),ActionRequired bit,Detail nvarchar(max),SuggestedFix nvarchar(max));
+IF OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.CompatibilityFact'',N''U'') IS NULL CREATE TABLE '+@QuotedRepositorySchema+N'.CompatibilityFact(RunId uniqueidentifier NOT NULL,ProjectName nvarchar(128) NOT NULL,AssessmentPhase varchar(10) NOT NULL,AssessmentTime datetime2(0) NOT NULL,ExecutedInstance nvarchar(256) NOT NULL,DatabaseName sysname NOT NULL,CompatibilityLevel int NOT NULL,InstanceMaxCompatibility int NOT NULL,DatabaseClass varchar(10) NOT NULL);
+IF COL_LENGTH(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.InventoryFact'',N''ProjectName'') IS NULL ALTER TABLE '+@QuotedRepositorySchema+N'.InventoryFact ADD ProjectName nvarchar(128) NULL;
+IF COL_LENGTH(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.InventoryFact'',N''AssessmentPhase'') IS NULL ALTER TABLE '+@QuotedRepositorySchema+N'.InventoryFact ADD AssessmentPhase varchar(10) NULL;
+IF COL_LENGTH(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.InventoryFact'',N''ExecutedInstance'') IS NULL ALTER TABLE '+@QuotedRepositorySchema+N'.InventoryFact ADD ExecutedInstance nvarchar(256) NULL;
+IF COL_LENGTH(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.InventoryFact'',N''AssessmentTime'') IS NULL ALTER TABLE '+@QuotedRepositorySchema+N'.InventoryFact ADD AssessmentTime datetime2(0) NULL;
+IF COL_LENGTH(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.InventoryFact'',N''InstanceMaxCompatibility'') IS NULL ALTER TABLE '+@QuotedRepositorySchema+N'.InventoryFact ADD InstanceMaxCompatibility int NULL;
+IF COL_LENGTH(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.AssessmentFinding'',N''ProjectName'') IS NULL ALTER TABLE '+@QuotedRepositorySchema+N'.AssessmentFinding ADD ProjectName nvarchar(128) NULL;
+IF COL_LENGTH(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.AssessmentFinding'',N''AssessmentPhase'') IS NULL ALTER TABLE '+@QuotedRepositorySchema+N'.AssessmentFinding ADD AssessmentPhase varchar(10) NULL;
+IF COL_LENGTH(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.AssessmentFinding'',N''AssessmentTime'') IS NULL ALTER TABLE '+@QuotedRepositorySchema+N'.AssessmentFinding ADD AssessmentTime datetime2(0) NULL;
+IF COL_LENGTH(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.AssessmentFinding'',N''ExecutedInstance'') IS NULL ALTER TABLE '+@QuotedRepositorySchema+N'.AssessmentFinding ADD ExecutedInstance nvarchar(256) NULL;';
+   EXEC(@sql);
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; SELECT @Ready=CASE WHEN SCHEMA_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N''') IS NOT NULL AND OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.AssessmentRun'',N''U'') IS NOT NULL AND OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.InventoryFact'',N''U'') IS NOT NULL AND OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.AssessmentFinding'',N''U'') IS NOT NULL AND OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.CompatibilityFact'',N''U'') IS NOT NULL THEN 1 ELSE 0 END;';
+   EXEC sys.sp_executesql @sql,N'@Ready bit OUTPUT',@RepositoryReady OUTPUT;
+   INSERT #C (CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix,SortOrder)
+   VALUES(CASE WHEN @RepositoryReady=1 THEN 'UPG-REP-READY' ELSE 'UPG-REP-FAIL' END,N'Repository',N'Database',@RepositoryDatabase,N'Repository initialisation',CASE WHEN @RepositoryReady=1 THEN N'PASS' ELSE N'NOT CHECKED' END,CASE WHEN @RepositoryReady=1 THEN 0 ELSE 1 END,CASE WHEN @RepositoryReady=1 THEN N'Repository tables AssessmentRun, AssessmentFinding, InventoryFact and CompatibilityFact verified.' ELSE N'One or more required repository tables are missing after initialisation.' END,N'Validate repository permissions and objects.',901);
+  END;
+ END TRY
+ BEGIN CATCH
+  SET @RepositoryReady=0;
+  INSERT #C (CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix,SortOrder)
+  VALUES('UPG-REP-BOOT',N'Repository',N'Instance',@Instance,N'Repository initialisation',N'NOT CHECKED',1,ERROR_MESSAGE(),N'Validate repository database/schema permissions.',902);
+ END CATCH;
+END;
+
+/* V7.0 SAVE AND REPOSITORY VIEWS */
+IF @RepositoryMode='SAVE' AND DB_ID(@RepositoryDatabase) IS NOT NULL AND @RepositoryReady=1
+BEGIN
+ DECLARE @RAG varchar(10);
+ SELECT @RAG=CASE WHEN SUM(CASE WHEN Status IN(N'FAIL',N'NOT CHECKED') THEN 1 ELSE 0 END)>0 THEN 'RED' WHEN SUM(CASE WHEN Status IN(N'WARN',N'MANUAL') THEN 1 ELSE 0 END)>0 THEN 'AMBER' ELSE 'GREEN' END FROM #C;
+
+ /* Save all evidence in one transaction. Views are deliberately outside this transaction. */
+ SET @sql=N'BEGIN TRAN;
+ INSERT '+QUOTENAME(@RepositoryDatabase)+N'.'+QUOTENAME(@RepositorySchema)+N'.AssessmentRun
+ (RunId,ProjectName,AssessmentPhase,ExecutedInstance,ProductVersion,Edition,AssessmentTime,OverallRAG)
+ VALUES(@Run,@Project,@Phase,@Instance,@Version,@Edition,@Now,@RAG);
+ INSERT '+QUOTENAME(@RepositoryDatabase)+N'.'+QUOTENAME(@RepositorySchema)+N'.InventoryFact
+ (RunId,Category,ObjectType,ObjectName,PropertyName,PropertyValue,ComparePolicy,IsCritical,ProjectName,AssessmentPhase,ExecutedInstance,AssessmentTime,InstanceMaxCompatibility)
+ SELECT @Run,Category,ObjectType,ObjectName,PropertyName,PropertyValue,ComparePolicy,IsCritical,@Project,@Phase,@Instance,@Now,@InstanceMaxCompat FROM #I;
+ INSERT '+QUOTENAME(@RepositoryDatabase)+N'.'+QUOTENAME(@RepositorySchema)+N'.AssessmentFinding
+ (RunId,CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix,ProjectName,AssessmentPhase,AssessmentTime,ExecutedInstance)
+ SELECT @Run,CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix,@Project,@Phase,@Now,@Instance FROM #C;
+ INSERT '+QUOTENAME(@RepositoryDatabase)+N'.'+QUOTENAME(@RepositorySchema)+N'.CompatibilityFact
+ (RunId,ProjectName,AssessmentPhase,AssessmentTime,ExecutedInstance,DatabaseName,CompatibilityLevel,InstanceMaxCompatibility,DatabaseClass)
+ SELECT @Run,@Project,@Phase,@Now,@Instance,DatabaseName,CompatibilityLevel,InstanceMaxCompatibility,DatabaseClass FROM #CompatibilityFact;
+ COMMIT;';
+ BEGIN TRY
+  EXEC sys.sp_executesql @sql,N'@Run uniqueidentifier,@Project nvarchar(128),@Phase varchar(10),@Instance nvarchar(256),@Version nvarchar(128),@Edition nvarchar(256),@Now datetime2(0),@RAG varchar(10),@InstanceMaxCompat int',@RunId,@ProjectName,@AssessmentPhase,@Instance,@Version,@Edition,@Now,@RAG,@InstanceMaxCompat;
+  INSERT #C VALUES('UPG-REP-SAVED',N'Repository',N'Database',@RepositoryDatabase,N'Repository SAVE',N'PASS',0,N'AssessmentRun, AssessmentFinding, InventoryFact and CompatibilityFact saved for RunId='+CONVERT(nvarchar(36),@RunId),N'No action required.',904);
+ END TRY
+ BEGIN CATCH
+  IF XACT_STATE()<>0 ROLLBACK;
+  INSERT #C VALUES('UPG-REP-SAVEERR',N'Repository',N'Database',@RepositoryDatabase,N'Repository SAVE',N'FAIL',1,ERROR_MESSAGE(),N'Correct the repository insert error and rerun the same phase.',904);
+ END CATCH;
+
+ /* Create each view in a separate dynamic batch. A view error cannot roll back saved evidence. */
+ IF EXISTS(SELECT 1 FROM #C WHERE CheckCode='UPG-REP-SAVED')
+ BEGIN
+  BEGIN TRY
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; IF OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.vw_AssessmentFindings'',N''V'') IS NOT NULL DROP VIEW '+QUOTENAME(@RepositorySchema)+N'.vw_AssessmentFindings;'; EXEC(@sql);
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; EXEC(N''CREATE VIEW '+QUOTENAME(@RepositorySchema)+N'.vw_AssessmentFindings AS SELECT RunId,ProjectName,AssessmentPhase,AssessmentTime,ExecutedInstance,CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix FROM '+QUOTENAME(@RepositorySchema)+N'.AssessmentFinding;'');'; EXEC(@sql);
+
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; IF OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.vw_PostCompatibilityStatus'',N''V'') IS NOT NULL DROP VIEW '+QUOTENAME(@RepositorySchema)+N'.vw_PostCompatibilityStatus;'; EXEC(@sql);
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; EXEC(N''CREATE VIEW '+QUOTENAME(@RepositorySchema)+N'.vw_PostCompatibilityStatus AS
+WITH R AS
+(
+ SELECT RunId,ProjectName,AssessmentPhase,ExecutedInstance,AssessmentTime,
+ ROW_NUMBER() OVER(PARTITION BY ProjectName,ExecutedInstance,AssessmentPhase ORDER BY AssessmentTime DESC,RunId DESC) rn
+ FROM (SELECT DISTINCT RunId,ProjectName,AssessmentPhase,ExecutedInstance,AssessmentTime FROM '+QUOTENAME(@RepositorySchema)+N'.CompatibilityFact) d
+),P AS
+(
+ SELECT c.* FROM '+QUOTENAME(@RepositorySchema)+N'.CompatibilityFact c JOIN R r ON c.RunId=r.RunId
+ WHERE r.AssessmentPhase=''''PRE'''' AND r.rn=1
+),Q AS
+(
+ SELECT c.* FROM '+QUOTENAME(@RepositorySchema)+N'.CompatibilityFact c JOIN R r ON c.RunId=r.RunId
+ WHERE r.AssessmentPhase=''''POST'''' AND r.rn=1
+)
+SELECT q.ProjectName,q.ExecutedInstance,q.RunId PostRunId,q.AssessmentTime PostAssessmentTime,q.DatabaseName,q.DatabaseClass,
+p.CompatibilityLevel PreCompatibility,q.CompatibilityLevel PostCompatibility,q.InstanceMaxCompatibility,
+CASE WHEN p.CompatibilityLevel IS NOT NULL AND q.CompatibilityLevel<p.CompatibilityLevel THEN ''''ALERT REQUIRED''''
+ WHEN q.CompatibilityLevel<q.InstanceMaxCompatibility THEN ''''WARN - UPLIFT REQUIRED'''' ELSE ''''COMPLIANT'''' END CompatibilityStatus,
+CONVERT(bit,CASE WHEN q.CompatibilityLevel<q.InstanceMaxCompatibility OR (p.CompatibilityLevel IS NOT NULL AND q.CompatibilityLevel<p.CompatibilityLevel) THEN 1 ELSE 0 END) ActionRequired,
+CONVERT(bit,CASE WHEN p.CompatibilityLevel IS NOT NULL AND q.CompatibilityLevel<p.CompatibilityLevel THEN 1 ELSE 0 END) AlertRequired,
+CASE WHEN p.CompatibilityLevel IS NOT NULL AND q.CompatibilityLevel<p.CompatibilityLevel THEN ''''Compatibility regressed after the upgrade. Immediate investigation and remediation are required.''''
+ WHEN q.CompatibilityLevel<q.InstanceMaxCompatibility THEN ''''Compatibility is below the maximum supported by the installed SQL Server instance and needs to be uplifted after Query Store baselining and regression testing.''''
+ ELSE ''''Compatibility is at the installed instance maximum.'''' END Message
+FROM Q q LEFT JOIN P p ON p.ProjectName=q.ProjectName AND p.ExecutedInstance=q.ExecutedInstance AND p.DatabaseName=q.DatabaseName;'');'; EXEC(@sql);
+
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; IF OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.vw_AllPostChanges'',N''V'') IS NOT NULL DROP VIEW '+QUOTENAME(@RepositorySchema)+N'.vw_AllPostChanges;'; EXEC(@sql);
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; EXEC(N''CREATE VIEW '+QUOTENAME(@RepositorySchema)+N'.vw_AllPostChanges AS
+WITH R AS
+(
+ SELECT RunId,ProjectName,AssessmentPhase,ExecutedInstance,AssessmentTime,
+ ROW_NUMBER() OVER(PARTITION BY ProjectName,ExecutedInstance,AssessmentPhase ORDER BY AssessmentTime DESC,RunId DESC) rn
+ FROM (SELECT DISTINCT RunId,ProjectName,AssessmentPhase,ExecutedInstance,AssessmentTime FROM '+QUOTENAME(@RepositorySchema)+N'.InventoryFact WHERE ProjectName IS NOT NULL) d
+),P AS
+(
+ SELECT f.* FROM '+QUOTENAME(@RepositorySchema)+N'.InventoryFact f JOIN R r ON f.RunId=r.RunId WHERE r.AssessmentPhase=''''PRE'''' AND r.rn=1
+),Q AS
+(
+ SELECT f.* FROM '+QUOTENAME(@RepositorySchema)+N'.InventoryFact f JOIN R r ON f.RunId=r.RunId WHERE r.AssessmentPhase=''''POST'''' AND r.rn=1
+)
+SELECT COALESCE(p.ProjectName,q.ProjectName) ProjectName,COALESCE(p.ExecutedInstance,q.ExecutedInstance) ExecutedInstance,
+p.RunId PreRunId,q.RunId PostRunId,p.AssessmentTime PreAssessmentTime,q.AssessmentTime PostAssessmentTime,
+CASE WHEN p.ObjectName IS NULL THEN ''''NEW'''' WHEN q.ObjectName IS NULL THEN ''''MISSING'''' ELSE ''''CHANGED'''' END ChangeType,
+CASE WHEN COALESCE(p.ComparePolicy,q.ComparePolicy)=''''COMPATIBILITY'''' AND TRY_CONVERT(int,q.PropertyValue)<TRY_CONVERT(int,p.PropertyValue) THEN ''''ALERT REQUIRED''''
+ WHEN COALESCE(p.ComparePolicy,q.ComparePolicy)=''''COMPATIBILITY'''' AND TRY_CONVERT(int,q.PropertyValue)<q.InstanceMaxCompatibility THEN ''''ACTION REQUIRED''''
+ WHEN COALESCE(p.ComparePolicy,q.ComparePolicy) IN(''''EXPECTED_CHANGE'''',''''NUMERIC'''',''''COMPATIBILITY'''') THEN ''''EXPECTED'''' ELSE ''''ACTION REQUIRED'''' END ChangeDisposition,
+CONVERT(bit,CASE WHEN COALESCE(p.ComparePolicy,q.ComparePolicy)=''''COMPATIBILITY'''' AND (TRY_CONVERT(int,q.PropertyValue)<TRY_CONVERT(int,p.PropertyValue) OR TRY_CONVERT(int,q.PropertyValue)<q.InstanceMaxCompatibility) THEN 1 WHEN COALESCE(p.ComparePolicy,q.ComparePolicy) IN(''''EXPECTED_CHANGE'''',''''NUMERIC'''',''''COMPATIBILITY'''') THEN 0 ELSE 1 END) ActionRequired,
+CONVERT(bit,CASE WHEN COALESCE(p.ComparePolicy,q.ComparePolicy)=''''COMPATIBILITY'''' AND TRY_CONVERT(int,q.PropertyValue)<TRY_CONVERT(int,p.PropertyValue) THEN 1 ELSE 0 END) AlertRequired,
+CASE WHEN COALESCE(p.ComparePolicy,q.ComparePolicy)=''''COMPATIBILITY'''' AND TRY_CONVERT(int,q.PropertyValue)<TRY_CONVERT(int,p.PropertyValue) THEN ''''FAIL''''
+ WHEN COALESCE(p.ComparePolicy,q.ComparePolicy)=''''COMPATIBILITY'''' AND TRY_CONVERT(int,q.PropertyValue)<q.InstanceMaxCompatibility THEN ''''WARN''''
+ WHEN COALESCE(p.IsCritical,q.IsCritical)=1 AND COALESCE(p.ComparePolicy,q.ComparePolicy) NOT IN(''''EXPECTED_CHANGE'''',''''NUMERIC'''',''''COMPATIBILITY'''') THEN ''''WARN'''' ELSE ''''INFO'''' END Severity,
+COALESCE(p.Category,q.Category) Category,COALESCE(p.ObjectType,q.ObjectType) ObjectType,COALESCE(p.ObjectName,q.ObjectName) ObjectName,
+COALESCE(p.PropertyName,q.PropertyName) PropertyName,p.PropertyValue PreValue,q.PropertyValue PostValue,q.InstanceMaxCompatibility,
+COALESCE(p.ComparePolicy,q.ComparePolicy) ComparePolicy,COALESCE(p.IsCritical,q.IsCritical) IsCritical
+FROM P p FULL JOIN Q q ON p.ProjectName=q.ProjectName AND p.ExecutedInstance=q.ExecutedInstance AND p.Category=q.Category AND p.ObjectType=q.ObjectType AND p.ObjectName=q.ObjectName AND p.PropertyName=q.PropertyName
+WHERE ISNULL(p.PropertyValue,N'''''''')<>ISNULL(q.PropertyValue,N'''''''');'');'; EXEC(@sql);
+
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; IF OBJECT_ID(N'''+REPLACE(@RepositorySchema,'''','''''')+N'.vw_ActionRequiredPostChanges'',N''V'') IS NOT NULL DROP VIEW '+QUOTENAME(@RepositorySchema)+N'.vw_ActionRequiredPostChanges;'; EXEC(@sql);
+   SET @sql=N'USE '+QUOTENAME(@RepositoryDatabase)+N'; EXEC(N''CREATE VIEW '+QUOTENAME(@RepositorySchema)+N'.vw_ActionRequiredPostChanges AS SELECT * FROM '+QUOTENAME(@RepositorySchema)+N'.vw_AllPostChanges WHERE ActionRequired=1;'');'; EXEC(@sql);
+
+   INSERT #C VALUES('UPG-REP-VIEWS',N'Repository',N'Database',@RepositoryDatabase,N'Repository views',N'PASS',0,N'vw_AssessmentFindings, vw_PostCompatibilityStatus, vw_AllPostChanges and vw_ActionRequiredPostChanges created or refreshed.',N'No action required.',905);
+  END TRY
+  BEGIN CATCH
+   INSERT #C VALUES('UPG-REP-VIEWERR',N'Repository',N'Database',@RepositoryDatabase,N'Repository views',N'WARN',1,ERROR_MESSAGE(),N'Rows were saved. Correct the individual view error separately.',905);
+  END CATCH;
+ END;
+END;
+IF @RepositoryMode='SAVE' AND @RepositoryReady=0 INSERT #C VALUES('UPG-REP-NOTREADY',N'Repository',N'Database',@RepositoryDatabase,N'Repository SAVE gate',N'FAIL',1,N'RepositoryReady=0; SAVE was not attempted.',N'Review repository initialisation errors.',903);
+
+/* SNAPSHOTS */
+IF @SnapshotFormat IN('JSON','BOTH') BEGIN IF @Major>=13 BEGIN SET @sql=N'SELECT @Run RunId,@Now AssessmentTime,N''V7.0.1'' ScriptVersion,@Phase AssessmentPhase,@Project ProjectName,@Environment Environment,@Service LogicalService,@Instance InstanceName,@Version ProductVersion,@Edition Edition,JSON_QUERY((SELECT CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix FROM #C ORDER BY SortOrder,CheckCode FOR JSON PATH)) Findings,JSON_QUERY((SELECT Category,ObjectType,ObjectName,PropertyName,PropertyValue,ComparePolicy,IsCritical FROM #I ORDER BY Category,ObjectType,ObjectName,PropertyName FOR JSON PATH)) Inventory FOR JSON PATH,WITHOUT_ARRAY_WRAPPER'; EXEC sys.sp_executesql @sql,N'@Run uniqueidentifier,@Now datetime2(0),@Phase varchar(10),@Project nvarchar(128),@Environment nvarchar(30),@Service nvarchar(128),@Instance nvarchar(256),@Version nvarchar(128),@Edition nvarchar(256)',@RunId,@Now,@AssessmentPhase,@ProjectName,@Environment,@LogicalService,@Instance,@Version,@Edition; END ELSE SELECT N'JSON requires SQL Server 2016 or later. Use CSV.' JsonMessage; END;
+IF @SnapshotFormat IN('CSV','BOTH') BEGIN SELECT N'RecordType,RunId,AssessmentTime,Phase,ProjectName,Category,ObjectType,ObjectName,PropertyName,PropertyValue,ComparePolicy,IsCritical' CsvLine UNION ALL SELECT N'INVENTORY,"'+CONVERT(nvarchar(36),@RunId)+N'","'+CONVERT(nvarchar(30),@Now,126)+N'","'+@AssessmentPhase+N'","'+REPLACE(@ProjectName,N'"',N'""')+N'","'+REPLACE(Category,N'"',N'""')+N'","'+REPLACE(ObjectType,N'"',N'""')+N'","'+REPLACE(ObjectName,N'"',N'""')+N'","'+REPLACE(PropertyName,N'"',N'""')+N'","'+REPLACE(COALESCE(PropertyValue,N''),N'"',N'""')+N'","'+ComparePolicy+N'","'+CONVERT(nvarchar(1),IsCritical)+N'"' FROM #I; END;
+
+/* COMPLETE EVIDENCE RESULT SETS FOR CSV/BOTH */
+IF @SnapshotFormat IN('CSV','BOTH')
+BEGIN
+ SELECT N'SUMMARY' RecordType,@RunId RunId,@Now AssessmentTime,@AssessmentPhase Phase,@ProjectName ProjectName,@Instance InstanceName,N'V7.0.1' ScriptVersion;
+ SELECT N'FINDING' RecordType,@RunId RunId,CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix FROM #C;
+END;
+
+/* OUTPUT */
+IF @OutputMode='EXECUTIVE' SELECT @RunId RunId,@Now AssessmentTime,N'V7.0.1' ScriptVersion,@AssessmentPhase Phase,@Instance InstanceName,@Version ProductVersion,@Edition Edition,@Target TargetVersion,SUM(CASE WHEN Status=N'FAIL' THEN 1 ELSE 0 END) FailCount,SUM(CASE WHEN Status=N'WARN' THEN 1 ELSE 0 END) WarnCount,SUM(CASE WHEN Status=N'MANUAL' THEN 1 ELSE 0 END) ManualCount,SUM(CASE WHEN Status=N'NOT CHECKED' THEN 1 ELSE 0 END) NotCheckedCount,CASE WHEN SUM(CASE WHEN Status IN(N'FAIL',N'NOT CHECKED') THEN 1 ELSE 0 END)>0 THEN N'RED' WHEN SUM(CASE WHEN Status IN(N'WARN',N'MANUAL') THEN 1 ELSE 0 END)>0 THEN N'AMBER' ELSE N'GREEN' END OverallRAG FROM #C;
+IF @OutputMode IN('SUMMARY','BOTH') SELECT @RunId RunId,@Now AssessmentTime,N'V7.0.1' ScriptVersion,@AssessmentPhase Phase,@ProjectName ProjectName,CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix FROM #C WHERE ActionRequired=1 ORDER BY CASE Status WHEN N'FAIL' THEN 1 WHEN N'NOT CHECKED' THEN 2 WHEN N'WARN' THEN 3 WHEN N'MANUAL' THEN 4 ELSE 5 END,SortOrder,CheckGroup,ScopeName;
+IF @OutputMode IN('FULL','BOTH') BEGIN SELECT @RunId RunId,@Now AssessmentTime,N'V7.0.1' ScriptVersion,@AssessmentPhase Phase,@Instance InstanceName,@Version ProductVersion,@Edition Edition,@Target TargetVersion; SELECT CheckCode,CheckGroup,ScopeType,ScopeName,CheckName,Status,ActionRequired,Detail,SuggestedFix FROM #C ORDER BY SortOrder,CheckGroup,ScopeName; SELECT SourceVersion,MinimumLevel,TargetVersion,DirectInPlaceSupported,PathStatus,PathMessage
+FROM #UpgradePath --WHERE TargetMajor=@TargetMajorVersion 
+WHERE SourceVersion=@SourcePathName
+  AND TargetMajor=@TargetMajorVersion
+
+ORDER BY SourceMajor,SourceVersion; SELECT * FROM #Hits ORDER BY CASE Severity WHEN N'FAIL' THEN 1 ELSE 2 END,DatabaseName,ObjectName; SELECT * FROM #I ORDER BY Category,ObjectType,ObjectName,PropertyName; END;
+-- END
