@@ -1,0 +1,276 @@
+UpgradeBuddy
+v7.0.1 Official
+Detailed Technical Guide
+Architecture, operating model, repository design, evidence rules and troubleshooting
+Author: Adrian Sleigh
+Baseline: UpgradeBuddy v7.0.1 Official
+Document date: 24 September 2026
+ 
+Contents
+1. Scope and audience	3
+2. Architecture and execution model	3
+3. Parameters and modes	3
+4. Repository data model	4
+5. PRE and POST operation	4
+6. Compatibility evidence and rules	5
+7. Findings and output interpretation	6
+8. Evidence exports and reporting	6
+9. Security and permissions	6
+10. Troubleshooting	7
+11. Operational runbook	7
+Appendix A. Example parameter sets	8
+Appendix B. Validation queries	9
+ 
+1. Scope and Audience
+This document describes the operating and technical model of UpgradeBuddy v7.0.1 Official. It is intended for DBAs, technical reviewers, upgrade engineers, change managers and teams producing CAB or cyber evidence.
+1.1 Objectives
+•	Assess whether an instance is ready for an in-place upgrade or migration.
+•	Preserve an auditable PRE baseline.
+•	Capture POST validation evidence using the same project context.
+•	Separate configuration inventory from compatibility evidence.
+•	Expose reliable repository reporting without requiring a procedural compare mode.
+•	Support concise operational output and detailed evidence exports.
+1.2 Supported SQL Server versions
+The v7.0.1 header states support for SQL Server 2008/R2, 2012, 2014, 2016, 2017, 2019, 2022 and 2025.
+Authoritative baseline
+UpgradeBuddy v7.0.1 Official is the current baseline for this document. The repository redesign stores self-describing run context and compatibility evidence.
+
+2. Architecture and Execution Model
+UpgradeBuddy executes as a T-SQL assessment script against the selected SQL Server instance. Temporary tables support in-run collection and formatting; repository tables preserve long-term evidence when SAVE is selected.
+2.1 Logical flow
+Parameters
+   -> Instance and database discovery
+   -> Readiness checks
+   -> #C findings and #I inventory
+   -> #CompatibilityFact compatibility capture
+   -> Optional repository SAVE
+   -> Repository views
+   -> Summary / Full / JSON / CSV result sets
+2.2 Default safety posture
+•	The default mode is read-only.
+•	Repository writes occur only when SAVE is selected.
+•	The script does not enable xp_cmdshell.
+•	The script does not write operating-system files.
+•	JSON and CSV are returned as result sets for the operator to retain.
+2.3 Recommended repository placement
+For an estate with a common DBA utility database, use ZDBA with the UpgradeBuddy schema. This keeps UpgradeBuddy objects isolated while avoiding a dedicated database per server.
+Database: ZDBA
+Schema:   UpgradeBuddy
+3. Parameters and Modes
+Parameter	Typical values	Purpose
+@TargetMajorVersion	15, 16, 17	Selects SQL Server 2019, 2022 or 2025 target rules.
+@UpgradeMethod	INPLACE, MIGRATION	Controls path interpretation.
+@OutputMode	EXECUTIVE, SUMMARY, FULL, BOTH	Controls human-readable result sets.
+@AssessmentPhase	PRE, POST	Labels evidence and determines phase-specific validation.
+@RepositoryMode	NONE, SAVE	NONE is read-only; SAVE persists evidence.
+@SnapshotFormat	NONE, JSON, CSV, BOTH	Controls portable evidence result sets.
+@ProjectName	Change/project identifier	Links PRE and POST evidence.
+@RepositoryDatabase	ZDBA or configured repository	Repository database.
+@RepositorySchema	UpgradeBuddy	Repository object namespace.
+
+3.1 Output modes
+EXECUTIVE: Counts and overall RAG for a management-level view.
+SUMMARY: Action-required findings ordered by severity.
+FULL: Run metadata, findings, evaluated upgrade path, legacy hits and inventory.
+BOTH: Summary plus full technical detail.
+3.2 Snapshot formats
+NONE: No portable JSON or CSV result set. Repository SAVE still works.
+JSON: Structured document suitable for automation or a future application.
+CSV: Tabular evidence suitable for Excel and ingestion.
+BOTH: Returns both portable formats.
+4. Repository Data Model
+v7.0.1 uses three evidence tables with explicit run context. Repository rows are committed before reporting views are created, and each view is created in its own batch.
+4.1 AssessmentFinding
+Column group	Content
+Run context	RunId, ProjectName, AssessmentPhase, AssessmentTime, ExecutedInstance
+Finding identity	CheckCode, CheckGroup, ScopeType, ScopeName, CheckName
+Assessment outcome	Status, ActionRequired
+Evidence	Detail, SuggestedFix
+
+AssessmentFinding is the principal table for operational findings and evidence traceability.
+4.2 InventoryFact
+Column group	Content
+Run context	Project, phase, time and executed instance
+Inventory key	Category, ObjectType, ObjectName, PropertyName
+Value	PropertyValue
+Comparison metadata	ComparePolicy, IsCritical
+Compatibility context	InstanceMaxCompatibility
+
+InventoryFact stores configuration and presence evidence. It supports direct PRE/POST configuration reporting through repository views.
+4.3 CompatibilityFact
+Column group	Content
+Run context	ProjectName, AssessmentPhase, AssessmentTime, ExecutedInstance
+Database identity	DatabaseName and database classification
+Measured value	CompatibilityLevel
+Reference value	InstanceMaxCompatibility
+
+CompatibilityFact deliberately separates database compatibility from general inventory so that regression and uplift logic remain clear.
+4.4 Why PRE and POST are retained
+The assessment logic can run similarly in both phases, but the phase identifies when evidence was captured. PRE is the baseline. POST is the validation state. The value is not different collection code alone; it is the preserved time and phase context used by reporting rules.
+5. PRE and POST Operation
+5.1 PRE readiness assessment
+1.	Select the target major version and upgrade method.
+2.	Run SUMMARY with RepositoryMode NONE to identify obvious blockers.
+3.	Resolve or document FAIL and NOT CHECKED findings.
+4.	Run PRE with SAVE and a controlled ProjectName.
+5.	Retain portable evidence if required.
+5.2 POST validation
+6.	Use the same ProjectName as PRE.
+7.	Set AssessmentPhase to POST and RepositoryMode to SAVE.
+8.	Confirm rows were stored for the correct instance.
+9.	Review repository views for configuration drift and compatibility status.
+10.	Address regressions before final sign-off.
+5.3 Why v7.0.1 does not require a procedural COMPARE mode
+The repository is designed to hold PRE and POST evidence as independent facts. Reporting views compare those facts. This simplifies execution, preserves history and makes the comparison repeatable without relying on temporary tables from an earlier session.
+Operational rule
+PRE and POST must use the same ProjectName. If multiple PRE baselines exist, reporting must identify the intended baseline according to the v7.0.1 view logic.
+
+6. Compatibility Evidence and Rules
+6.1 Scope
+CompatibilityFact captures master and user databases. master is included because it can remain at its previous compatibility level after the engine is upgraded. Compatibility evidence for engine-managed system databases is not treated as user-database regression evidence.
+6.2 Installed maximum
+SQL Server target	Maximum compatibility
+2019	150
+2022	160
+2025	170
+
+6.3 Classification rules
+Condition	Classification	Meaning
+POST lower than PRE	ALERT REQUIRED / FAIL	Compatibility regressed after the baseline.
+POST below installed maximum	WARN / UPLIFT REQUIRED	No regression may exist, but the database is not using the installed maximum.
+POST equals installed maximum	PASS / no uplift warning	Compatibility meets the installed maximum.
+No usable PRE evidence	Evidence gap	Validate project, instance and phase data before sign-off.
+
+6.4 Worked examples
+PRE	POST	Instance max	Outcome
+150	150	170	WARN: uplift required; no regression.
+150	140	170	FAIL: regression, also below maximum.
+150	170	170	PASS: uplifted to installed maximum.
+170	170	170	PASS: unchanged and at maximum.
+
+6.5 Recommended uplift approach
+Compatibility uplift is commonly managed as a controlled follow-on activity. Retain the existing level if required for upgrade stability, baseline Query Store and application behaviour, then uplift through approved change control and regression testing.
+7. Findings and Output Interpretation
+Status	Interpretation	Required handling
+FAIL	Blocking or materially unsafe condition	Resolve or obtain formal risk acceptance.
+WARN	Risk, technical debt or planned follow-up	Remediate, schedule or document.
+NOT CHECKED	Assessment could not prove the outcome	Correct access or provide manual evidence.
+MANUAL	Evidence cannot be automated fully	Attach or record manual validation.
+INFO	Context or non-blocking observation	Review and retain.
+PASS	Check completed without a detected issue	No action.
+
+7.1 ActionRequired
+SUMMARY output filters to ActionRequired = 1. A PASS or non-actionable INFO row may exist in FULL output but not appear in SUMMARY.
+7.2 Overall RAG
+•	RED when FAIL or NOT CHECKED evidence exists.
+•	AMBER when WARN or MANUAL evidence exists without RED conditions.
+•	GREEN when no higher-severity conditions exist.
+8. Evidence Exports and Reporting
+8.1 JSON
+JSON returns run metadata, findings and inventory as a structured result set. It is intended for automation, a future application or controlled processing. It is not the primary human-reading format in SSMS.
+8.2 CSV
+CSV result sets are intended for evidence packs, Excel review and ingestion. Save the result from SSMS or SQLCMD using the organisation’s approved evidence-handling process.
+8.3 Repository reporting
+•	Assessment history by project and instance.
+•	PRE/POST configuration changes.
+•	Compatibility regression and uplift reports.
+•	Outstanding FAIL, WARN, NOT CHECKED and MANUAL items.
+•	Estate reporting through PBIRS or approved BI tooling.
+9. Security and Permissions
+•	Use an account with the approved visibility required by the assessment.
+•	Repository SAVE requires write permissions on the configured schema and tables.
+•	Creating a schema or repository objects requires additional DDL permissions.
+•	DBCC metadata, service DMVs and some msdb inventories may return NOT CHECKED when permissions are restricted.
+•	Do not treat NOT CHECKED as PASS. Provide alternate evidence or rerun with an approved assessment identity.
+Least privilege
+UpgradeBuddy should not be used as a reason to grant permanent broad privileges. Use approved temporary or controlled access and retain the resulting evidence.
+
+10. Troubleshooting
+Symptom	Likely cause	Action
+UPG-REP-READY only, no other repository rows	Save logic or transaction path not reached	Check RepositoryMode, ProjectName and repository insert findings.
+Repository tables exist but are empty	Dynamic repository write failed or was skipped	Check UPG-REP findings and execute with FULL output.
+UPG-DBCC-ERR permission message	Assessment identity cannot run DBCC DBINFO	Run CHECKDB evidence separately or use an approved identity.
+Linked server SQLNCLI warning/fail	Legacy provider dependency	Inventory usage and plan replacement/testing with an approved provider.
+POST below target but no regression	Compatibility unchanged from PRE	Treat as WARN / uplift required, not FAIL.
+No PRE/POST report	ProjectName, phase, instance or repository context mismatch	Verify stored context in all three evidence tables.
+
+10.1 Repository verification queries
+SELECT TOP (20) *
+FROM ZDBA.UpgradeBuddy.AssessmentFinding
+ORDER BY AssessmentTime DESC;
+
+SELECT TOP (20) *
+FROM ZDBA.UpgradeBuddy.InventoryFact
+ORDER BY AssessmentTime DESC;
+
+SELECT TOP (20) *
+FROM ZDBA.UpgradeBuddy.CompatibilityFact
+ORDER BY AssessmentTime DESC;
+11. Operational Runbook
+11.1 Before the change
+11.	Confirm the exact v7.0.1 Official script checksum or controlled source.
+12.	Set target version, method, repository and project parameters.
+13.	Run a read-only SUMMARY assessment.
+14.	Resolve blockers and evidence gaps.
+15.	Run PRE SAVE.
+16.	Verify repository row counts and context.
+17.	Retain JSON/CSV if required by CAB or cyber review.
+11.2 After the change
+18.	Confirm the engine and services are available.
+19.	Run POST SAVE with the same ProjectName.
+20.	Review SUMMARY output.
+21.	Review compatibility regression and uplift views.
+22.	Review configuration drift views.
+23.	Resolve or document all actionable outcomes.
+24.	Retain final evidence and sign-off.
+11.3 Evidence package
+•	PRE findings and inventory
+•	POST findings and inventory
+•	Compatibility report
+•	Configuration comparison report
+•	Manual evidence for restore tests, application tests and unresolved automatic checks
+•	Change record reference and risk acceptance where applicable
+Appendix A. Example Parameter Sets
+A.1 Read-only SQL Server 2019 assessment
+@TargetMajorVersion = 15
+@UpgradeMethod      = 'INPLACE'
+@OutputMode         = 'SUMMARY'
+@AssessmentPhase    = 'PRE'
+@RepositoryMode     = 'NONE'
+@SnapshotFormat     = 'NONE'
+A.2 Save PRE for SQL Server 2025
+@TargetMajorVersion = 17
+@UpgradeMethod      = 'INPLACE'
+@OutputMode         = 'BOTH'
+@AssessmentPhase    = 'PRE'
+@RepositoryMode     = 'SAVE'
+@ProjectName        = N'CRQ123456_SQL2019_TO_SQL2025'
+@SnapshotFormat     = 'BOTH'
+A.3 Save POST for SQL Server 2025
+@TargetMajorVersion = 17
+@UpgradeMethod      = 'INPLACE'
+@OutputMode         = 'BOTH'
+@AssessmentPhase    = 'POST'
+@RepositoryMode     = 'SAVE'
+@ProjectName        = N'CRQ123456_SQL2019_TO_SQL2025'
+@SnapshotFormat     = 'BOTH'
+Appendix B. Validation Queries
+B.1 Check run context
+SELECT ProjectName, AssessmentPhase, AssessmentTime, ExecutedInstance, COUNT(*) AS FindingCount
+FROM ZDBA.UpgradeBuddy.AssessmentFinding
+GROUP BY ProjectName, AssessmentPhase, AssessmentTime, ExecutedInstance
+ORDER BY AssessmentTime DESC;
+B.2 Inspect compatibility evidence
+SELECT ProjectName, AssessmentPhase, AssessmentTime, ExecutedInstance,
+       DatabaseName, CompatibilityLevel, InstanceMaxCompatibility
+FROM ZDBA.UpgradeBuddy.CompatibilityFact
+ORDER BY ProjectName, DatabaseName, AssessmentTime;
+B.3 Outstanding actions
+SELECT ProjectName, AssessmentPhase, AssessmentTime, ExecutedInstance,
+       CheckCode, CheckGroup, ScopeName, Status, Detail, SuggestedFix
+FROM ZDBA.UpgradeBuddy.AssessmentFinding
+WHERE ActionRequired = 1
+ORDER BY AssessmentTime DESC, Status, CheckGroup, ScopeName;
+Document control
+This guide describes UpgradeBuddy v7.0.1 Official. Update the version, release notes and technical documentation whenever functional script behaviour changes.
+
